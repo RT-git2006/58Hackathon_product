@@ -4,6 +4,8 @@
  * 激面白字幕メーカー
  *  - Web Speech API : 音声認識（#1）
  *  - Web Audio API  : 音量・ピッチ・話速の解析（#2）
+ *  - MediaPipe Pose : 体の動きの大きさ（#3）
+ *  - 声+動きの複合スコアで感情の種類・強さを推定（#4）
  *  - Canvas         : 感情を誇張した字幕アニメーション（#5）
  *  - フルスクリーン   : F キー / F11（#6）
  * ========================================================= */
@@ -21,6 +23,9 @@ const CONFIG = {
   charStagger: 28, // 1文字ずつポップインする間隔(ms)
   pitchMin: 70,
   pitchMax: 600,
+  mediapipeVersion: '0.10.14',
+  poseModel:
+    'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
 };
 
 // 感情ごとの色
@@ -103,11 +108,20 @@ const features = {
   rateNorm: 0, // 0..1
   intensity: 0, // 0..1 統合した感情の強さ
   recentPeak: 0, // 直近の intensity の最大値（認識テキストが届く前の叫びを取りこぼさない）
+  // 体の動き（MediaPipe Pose）
+  bodyDetected: false,
+  motion: 0, // 0..1 動きの速さ
+  spread: 0, // 0..1 両手の広がり
+  handsUp: 0, // 0..1 手が頭より上にある度合い
+  handsFace: 0, // 0..1 手で顔を覆っている度合い
 };
 
-// 声の特徴量を 1 つの強さスコアに統合
+// 声と体の動きを 1 つの強さスコアに統合（#4）
+// 声が主役。黙って動いても字幕は出ないが、話しながら動くと強さが増幅される
 function computeIntensity(f) {
-  return clamp(f.volume * 0.65 + f.pitchExcite * 0.2 + f.rateNorm * 0.15, 0, 1);
+  const voice = f.volume * 0.65 + f.pitchExcite * 0.2 + f.rateNorm * 0.15;
+  const body = f.motion * 0.7 + f.spread * 0.3;
+  return clamp(voice * (1 + body * 0.8) + body * voice * 0.3, 0, 1);
 }
 
 /* =========================================================
@@ -176,6 +190,142 @@ function detectPitch(buf, sampleRate) {
 }
 
 /* =========================================================
+ * MediaPipe Pose Landmarker: 体の動き
+ * ========================================================= */
+const video = document.getElementById('cam');
+const camView = document.getElementById('camView');
+const camCtx = camView.getContext('2d');
+const body = { landmarker: null, lastVideoTime: -1, prev: null, prevTime: 0, lm: null };
+
+// 動き量の計算に使う点: 鼻・両肩・両肘・両手首
+const MOTION_POINTS = [0, 11, 12, 13, 14, 15, 16];
+// プレビューに描く骨格の線
+const SKELETON = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24]];
+
+async function initBody() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+    video.srcObject = stream;
+    await video.play();
+  } catch (err) {
+    console.error(err);
+    toast('カメラを使えません（声だけで動作します）', 4000);
+    return;
+  }
+
+  try {
+    toast('動き検出を準備中…', 10000);
+    const base = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${CONFIG.mediapipeVersion}`;
+    // classic script から ES モジュールを動的 import（ビルド不要のまま使うため）
+    const { FilesetResolver, PoseLandmarker } = await import(`${base}/vision_bundle.mjs`);
+    const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+    const create = (delegate) =>
+      PoseLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: CONFIG.poseModel, delegate },
+        runningMode: 'VIDEO',
+        numPoses: 1,
+      });
+    // GPU が使えない PC では CPU にフォールバック
+    body.landmarker = await create('GPU').catch(() => create('CPU'));
+    camView.width = 320;
+    camView.height = 240;
+    camView.hidden = false;
+    toast('動き検出 ON');
+  } catch (err) {
+    console.error(err);
+    toast('動き検出を読み込めませんでした（声だけで動作します）', 5000);
+  }
+}
+
+function updateBody(now) {
+  if (!body.landmarker || video.readyState < 2 || video.currentTime === body.lastVideoTime) {
+    return;
+  }
+  body.lastVideoTime = video.currentTime;
+  const res = body.landmarker.detectForVideo(video, now);
+  const lm = res.landmarks && res.landmarks[0];
+  body.lm = lm || null;
+
+  if (!lm) {
+    features.bodyDetected = false;
+    features.motion = lerp(features.motion, 0, 0.1);
+    features.spread = lerp(features.spread, 0, 0.1);
+    features.handsUp = lerp(features.handsUp, 0, 0.1);
+    features.handsFace = lerp(features.handsFace, 0, 0.1);
+    body.prev = null;
+    return;
+  }
+  features.bodyDetected = true;
+
+  // 肩幅を基準にして、カメラからの距離に依存しない値にする
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const shoulder = Math.max(0.05, dist(lm[11], lm[12]));
+  const visible = (p) => (p.visibility ?? 1) > 0.5;
+
+  // 動きの速さ（肩幅/秒）
+  let raw = 0;
+  if (body.prev) {
+    const dtSec = Math.max(0.016, (now - body.prevTime) / 1000);
+    let d = 0;
+    let n = 0;
+    for (const id of MOTION_POINTS) {
+      if (visible(lm[id]) && visible(body.prev[id])) {
+        d += dist(lm[id], body.prev[id]);
+        n++;
+      }
+    }
+    if (n) raw = clamp(d / n / shoulder / dtSec / 4, 0, 1);
+  }
+  // 大きく動いた瞬間はすぐ反映し、ゆっくり落ち着く
+  features.motion = lerp(features.motion, raw, raw > features.motion ? 0.5 : 0.06);
+
+  const [nose, lw, rw] = [lm[0], lm[15], lm[16]];
+  const wristsVisible = visible(lw) && visible(rw);
+  const spread = wristsVisible ? clamp((dist(lw, rw) / shoulder - 1.5) / 2.5, 0, 1) : 0;
+  // 画像座標は y が下向きなので「手首の y < 鼻の y」が手を挙げた状態
+  const up = ((visible(lw) && lw.y < nose.y ? 1 : 0) + (visible(rw) && rw.y < nose.y ? 1 : 0)) / 2;
+  const face = ((visible(lw) && dist(lw, nose) < shoulder * 0.5 ? 1 : 0) + (visible(rw) && dist(rw, nose) < shoulder * 0.5 ? 1 : 0)) / 2;
+  features.spread = lerp(features.spread, spread, 0.2);
+  features.handsUp = lerp(features.handsUp, up, 0.2);
+  features.handsFace = lerp(features.handsFace, face, 0.2);
+
+  body.prev = lm.map((p) => ({ x: p.x, y: p.y, visibility: p.visibility }));
+  body.prevTime = now;
+}
+
+// 右下のカメラプレビュー（鏡像＋骨格）
+function drawCamView() {
+  if (camView.hidden || !body.landmarker) return;
+  const w = camView.width;
+  const h = camView.height;
+  camCtx.save();
+  camCtx.translate(w, 0);
+  camCtx.scale(-1, 1);
+  camCtx.globalAlpha = 0.6;
+  camCtx.drawImage(video, 0, 0, w, h);
+  camCtx.globalAlpha = 1;
+  const lm = body.lm;
+  if (lm) {
+    const color = `hsl(${lerp(200, 0, features.motion)}, 100%, 60%)`;
+    camCtx.strokeStyle = color;
+    camCtx.fillStyle = color;
+    camCtx.lineWidth = 3;
+    for (const [a, b] of SKELETON) {
+      camCtx.beginPath();
+      camCtx.moveTo(lm[a].x * w, lm[a].y * h);
+      camCtx.lineTo(lm[b].x * w, lm[b].y * h);
+      camCtx.stroke();
+    }
+    for (const id of MOTION_POINTS) {
+      camCtx.beginPath();
+      camCtx.arc(lm[id].x * w, lm[id].y * h, 4, 0, Math.PI * 2);
+      camCtx.fill();
+    }
+  }
+  camCtx.restore();
+}
+
+/* =========================================================
  * 感情推定
  * ========================================================= */
 // テキストからキーワードを数え、「怖い単語」の文字位置を返す
@@ -196,13 +346,17 @@ function analyzeText(text) {
   return { kw, scary };
 }
 
-// 声の特徴から推定した感情スコア（キーワードが無くても反応させる）
+// 声と体の特徴から推定した感情スコア（キーワードが無くても反応させる）
 function prosodyScores(f) {
   return {
-    surprise: f.pitchExcite * f.volume * 1.2,
-    anger: f.volume > 0.7 && f.pitchExcite < 0.25 ? (f.volume - 0.7) * 3 : 0,
-    joy: f.pitchExcite * f.rateNorm * 0.8,
-    fear: f.volume < 0.25 && f.rateNorm > 0.5 ? 0.4 : 0, // 小声で早口 → 怯え
+    // 声が裏返る＋大きく動く → 驚き
+    surprise: f.pitchExcite * f.volume * 1.2 + f.motion * f.pitchExcite * 0.8,
+    // 低めの大声＋激しい動き → 怒り
+    anger: (f.volume > 0.7 && f.pitchExcite < 0.25 ? (f.volume - 0.7) * 3 : 0) + (f.volume > 0.6 ? f.motion * 0.5 : 0),
+    // 声が高く弾む／両手を挙げる → 喜び
+    joy: f.pitchExcite * f.rateNorm * 0.8 + f.handsUp * 0.9,
+    // 小声で早口／手で顔を覆う → 恐怖
+    fear: (f.volume < 0.25 && f.rateNorm > 0.5 ? 0.4 : 0) + f.handsFace * 1.0,
   };
 }
 
@@ -515,7 +669,9 @@ function drawCaption(c, now) {
   ctx.save();
   ctx.globalAlpha = c.alpha;
   ctx.translate(c.cx, c.cy);
-  ctx.rotate(c.tilt * (0.4 + I));
+  // 発話中は体の動きに合わせて字幕ごと揺さぶる
+  const sway = c.live ? Math.sin(now / 90) * 0.08 * features.motion : 0;
+  ctx.rotate(c.tilt * (0.4 + I) + sway);
   const s = c.scale * (1 + c.punch);
   ctx.scale(s, s);
   ctx.font = fontStr(size);
@@ -665,6 +821,7 @@ function frame() {
   lastTime = now;
 
   updateAudio();
+  updateBody(now);
 
   // 話速: 発話中の字幕の文字数 / 経過時間
   if (liveCaption && liveCaption.text) {
@@ -684,6 +841,7 @@ function frame() {
   }
 
   render(now, dt);
+  drawCamView();
   updateHud(now);
   requestAnimationFrame(frame);
 }
@@ -701,6 +859,10 @@ function updateHud(now) {
     ['ピッチ', features.pitchExcite, `${features.pitch.toFixed(0)}Hz`],
     ['基準ピッチ', null, `${features.pitchBase.toFixed(0)}Hz`],
     ['話速', features.rateNorm, `${features.rate.toFixed(1)}字/s`],
+    ['動き', features.motion, features.bodyDetected ? features.motion.toFixed(2) : '未検出'],
+    ['手の広がり', features.spread, features.spread.toFixed(2)],
+    ['手を挙げる', features.handsUp, features.handsUp.toFixed(2)],
+    ['顔を覆う', features.handsFace, features.handsFace.toFixed(2)],
     ['強さ', features.intensity, features.intensity.toFixed(2)],
   ];
   hud.innerHTML =
@@ -739,6 +901,8 @@ async function start() {
   overlay.hidden = true;
   document.body.classList.add('running');
   requestAnimationFrame(frame);
+  // カメラと MediaPipe の読み込みは時間がかかるので、声の字幕を先に動かしておく
+  initBody();
 }
 
 startBtn.addEventListener('click', start);
@@ -770,6 +934,10 @@ window.addEventListener('keydown', (e) => {
     case 'C':
       captions.length = 0;
       liveCaption = null;
+      break;
+    case 'v':
+    case 'V':
+      if (body.landmarker) camView.hidden = !camView.hidden;
       break;
     case 'Enter':
       e.preventDefault();

@@ -123,6 +123,31 @@ kbd {
   opacity: 0.55;
 }
 
+/* ---------- カメラ ---------- */
+#cam {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#camView {
+  position: fixed;
+  right: 16px;
+  bottom: 24px;
+  width: 240px;
+  border-radius: 8px;
+  border: 1px solid #333;
+  opacity: 0.8;
+  z-index: 5;
+  pointer-events: none;
+}
+
+#camView[hidden] {
+  display: none;
+}
+
 /* ---------- 解析値表示 ---------- */
 #hud {
   position: fixed;
@@ -149,7 +174,7 @@ kbd {
 }
 
 #hud .label {
-  width: 72px;
+  width: 84px;
   opacity: 0.7;
 }
 

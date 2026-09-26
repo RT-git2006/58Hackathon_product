@@ -16,16 +16,21 @@
   <!-- 起動画面（マイク許可にはユーザー操作が必要） -->
   <div id="overlay">
     <h1 class="title"><span class="shake">激</span>面白字幕メーカー</h1>
-    <p class="lead">声の大きさ・高さ・速さを読み取って、感情を大げさに字幕にします。</p>
+    <p class="lead">声の大きさ・高さ・速さと体の動きを読み取って、感情を大げさに字幕にします。</p>
     <button id="startBtn">はじめる</button>
     <ul class="keys">
       <li><kbd>F</kbd> フルスクリーン切替（F11 でも可）</li>
       <li><kbd>D</kbd> 解析値の表示/非表示</li>
       <li><kbd>Enter</kbd> テキストを手入力（音声認識が使えない時の代替）</li>
       <li><kbd>C</kbd> 字幕をクリア</li>
+      <li><kbd>V</kbd> カメラ映像（骨格）の表示/非表示</li>
     </ul>
     <p class="note">Chrome 推奨。音声認識にはインターネット接続が必要です。</p>
   </div>
+
+  <!-- 体の動き検出用のカメラ映像（非表示）と、骨格付きのプレビュー -->
+  <video id="cam" playsinline muted></video>
+  <canvas id="camView" hidden></canvas>
 
   <!-- デバッグ用の解析値表示 -->
   <div id="hud" hidden></div>
