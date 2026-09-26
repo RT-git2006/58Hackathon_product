@@ -29,6 +29,7 @@ python -m http.server 8000
 | `1`〜`4` | 今しゃべっている人を 話者1〜4 に指定（識別を外したときの修正。その声を覚え直す） |
 | `S` | 話者名の表示切替 |
 | `R` | 話者をリセット |
+| `T` | 背景の話題（絵文字）の表示切替 |
 
 ## 構成
 
@@ -36,6 +37,7 @@ python -m http.server 8000
 | --- | --- |
 | `index.html` | 画面の骨組み（キャンバス・起動画面・HUD） |
 | `style.css` | 起動画面・HUD・入力欄のスタイル |
+| `emoji-ja.js` | 日本語の単語 → 絵文字の対応表（約 4700 語。`tools/build-emoji-ja.js` で Unicode CLDR から自動生成） |
 | `lexicon.js` | 語彙辞書（単語・漢字 → カテゴリ）と、カテゴリごとのフォント・配色・テロップ装飾 |
 | `script.js` | 音声認識 / 音声解析 / 動き検出 / 感情推定 / 字幕レイアウト・アニメーション / 吹き出し / メインループ |
 
@@ -59,7 +61,9 @@ python -m http.server 8000
 
 10. **前のページを残す**: 次のページが出るとき、前のページは閉じずに画面上部の端へ小さく寄せる（話者1 は左、話者2 は右など、話者の側）。`CONFIG.dockTime` の間残り、同じ側に新しいページが来ても最低 `CONFIG.minDock` は残す。
 11. **話者の識別**: カメラに顔が映っていれば、MediaPipe Face Landmarker の口の開き（jawOpen）の変化で「声が出ている時に口が動いている人」を話者にする。映っていなければ、声の高さ（ピッチ）と声質（スペクトル重心）の近さで見分ける。話者が替わったらページを切り替え、話者名の札を付ける。外れたときは `1`〜`4` キーで指定できる。
-12. **関西弁**: 関西弁の語彙（なんでやねん・しんど・あかん・しばく・おおきに 等）をカテゴリと絵文字の辞書に追加。「やねん」「へん」「やん」などの文末は前の単語にくっつけ、「めっちゃ」「ほんま」「ごっつ」などの強調語は大きく表示する。
+12. **方言・若者言葉**: 関西弁・博多・広島・名古屋・東北・北海道・沖縄・土佐などの方言と若者言葉（ぴえん・エモい・それな 等）をカテゴリと絵文字の辞書に追加。方言の文末（やねん・ったい・じゃけえ・だがや・だべ・さー 等）は前の単語にくっつけ、強調語（めっちゃ・ばり・ぶち・でら・なまら・でーじ 等）は大きく表示する。
+13. **どんな単語にも絵文字**: 手書きの辞書（`lexicon.js` の `EMOJI`）と、Unicode CLDR の日本語キーワード（`emoji-ja.js`）の両方で単語を探し、長く一致した方の絵文字を付ける。1 文字の漢字は単語の中心のときだけ（「火曜」で🔥にしない）。Windows で表示できない新しい絵文字（Emoji 15 以降）は除外している。
+14. **背景の話題**: 確定したページの絵文字を背景に薄く浮かべる。新しい話題は右に現れてゆっくり左へ流れ（右＝今、左＝少し前）、同じ話題がまた出ると大きくなって右へ戻る。しばらく話に出ない話題は消える。背景を見ると、会話の流れと何の話をしているかが分かる。
 
 ### 調整ポイント
 
@@ -67,9 +71,10 @@ python -m http.server 8000
 - 文字の最大サイズ: `CONFIG.maxWordRatio`
 - 1 ページの長さ: `CONFIG.pageMaxChars` / `CONFIG.minFontRatio`
 - 縦書き・吹き出しの出やすさ: `CONFIG.columnsChance` / `CONFIG.verticalWordChance` / `CONFIG.bubbleChance`
-- 語彙・フォント・配色・絵文字: `lexicon.js` の `WORDS` / `KANJI` / `CATEGORIES` / `EMOJI`（関西弁は `KANSAI` / `KANSAI_EMOJI`）
+- 語彙・フォント・配色・絵文字: `lexicon.js` の `WORDS` / `KANJI` / `CATEGORIES` / `EMOJI`（方言・若者言葉は `KANSAI` / `DIALECTS` / `SLANG` / `EXTRA_EMOJI`）。CLDR の表を作り直すときは `node tools/build-emoji-ja.js`
 - ムードごとの動き: `script.js` の `MOOD_ENTRANCES` / `chunkEntrance` / `charEntrance` / `charIdle`
 - 前のページを残す時間・大きさ: `CONFIG.dockTime` / `CONFIG.minDock` / `CONFIG.dockArea`
 - 話者の識別の感度: `CONFIG.newSpeakerDist`（小さいほど別人と判断しやすい）/ `CONFIG.speakerSwitchMs` / `CONFIG.mouthAct`
+- 背景の話題: `CONFIG.topicLife`（消えるまで）/ `CONFIG.topicMax` / `CONFIG.topicAlpha`（濃さ）/ `CONFIG.topicDrift`（流れる速さ）
 - 声と動きの混ぜ方: `computeIntensity` / `prosodyScores`
 - 動きの感度: `updateBody` 内の `/ 4`（肩幅/秒の何倍で最大とするか）

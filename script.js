@@ -44,6 +44,11 @@ const CONFIG = {
   newSpeakerMs: 700, // 知らない声がこれだけ続いたら新しい話者にする(ms)
   speakerSwitchMs: 600, // 別の話者の証拠がこれだけ続いたら話者を切り替える(ms)
   mouthAct: 0.2, // 口の動きがこれ以上なら、その顔の人がしゃべっているとみなす
+  showTopics: true, // 会話に出た話題の絵文字を背景に表示する（T キーで切替）
+  topicLife: 120000, // 話題の絵文字が、最後に話に出てから消えるまで(ms)
+  topicMax: 14, // 背景に出す話題の数の上限
+  topicAlpha: 0.14, // 背景の絵文字の濃さ
+  topicDrift: 0.0025, // 話題が左へ流れる速さ（画面幅/秒）。右が今の話題、左が少し前の話題
   mediapipeVersion: '0.10.14',
   poseModel:
     'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
@@ -624,11 +629,23 @@ const RE_HIRA = /^[ぁ-ゟー]+$/;
 const RE_KANJI_END = /[一-鿿々]$/;
 const RE_KANJI_START = /^[一-鿿々]/;
 const RE_SENT_END = /[。！？!?]$/;
-// 関西弁の文末・活用（前の単語にくっつける）
-const RE_KANSAI_END =
-  /^(やねん|ねん|やんか|やんな|やん|へん|ひん|へんで|まへん|やで|やわ|やな|やろ|やし|けど|けどな|さかい|がな|ねや|んや|んか|とる|とん|てん|たん|はる|よる|やんけ|じゃん|ちゃう)$/;
-// 強調の言葉（標準語・関西弁）。含む単語は大きくする
-const RE_INTENSIFIER = /めっちゃ|めっさ|むっちゃ|めちゃ|ごっつ|えらい|ほんま|ホンマ|すっご|超|クソ|くっそ|バリ|ばり/;
+// 方言・話し言葉の文末（前の単語にくっつける）
+//   関西: やねん へん やん やで さかい はる / 博多: ったい けん ばい やけん / 広島: じゃけえ じゃろ けえ
+//   名古屋: だがや でかん みゃあ / 東北・北海道: だべ べさ だっちゃ っしょ したっけ / 沖縄: さー やっさ / 土佐: ぜよ やき
+const RE_DIALECT_END = new RegExp(
+  '^(' +
+    [
+      'やねん', 'ねん', 'やんか', 'やんな', 'やん', 'へん', 'ひん', 'へんで', 'まへん', 'やで', 'やわ', 'やな', 'やろ', 'やし',
+      'けど', 'けどな', 'さかい', 'がな', 'ねや', 'んや', 'んか', 'とる', 'とん', 'てん', 'たん', 'はる', 'よる', 'やんけ',
+      'ったい', 'けん', 'ばい', 'やけん', 'やけ', 'っちゃ', 'とよ', 'じゃけえ', 'じゃけん', 'じゃろ', 'じゃのう', 'けえ',
+      'だがや', 'がや', 'でかん', 'みゃあ', 'だぎゃ', 'だべ', 'だべさ', 'べさ', 'だっちゃ', 'んだ', 'だす', 'っしょ', 'したっけ',
+      'さー', 'やっさ', 'ぜよ', 'やき', 'じゃき', 'どす', 'じゃん', 'ちゃう', 'っす', 'みたいな',
+    ].join('|') +
+    ')$',
+);
+// 強調の言葉（標準語・各地の方言・若者言葉）。含む単語は大きくする
+const RE_INTENSIFIER =
+  /めっちゃ|めっさ|むっちゃ|めちゃ|ごっつ|えらい|ほんま|ホンマ|すっご|超|クソ|くっそ|バリ|ばり|ぶち|でら|なまら|でーじ|ちかっぱ|がばい|わや|鬼|激|爆|ガチ|マジで/;
 const MAX_CHUNK = 8;
 
 const normalize = (text) => text.replace(/\s+/g, '');
@@ -654,7 +671,7 @@ function splitChunks(text) {
       prev.length + t.length <= MAX_CHUNK + 2 &&
       (!s.word || // 句読点・記号
         (RE_HIRA.test(t) && (t.length <= 2 || prev.length === 1)) || // 助詞・送り仮名
-        RE_KANSAI_END.test(t) || // 関西弁の文末
+        RE_DIALECT_END.test(t) || // 方言・話し言葉の文末
         (RE_KANJI_END.test(prev) && RE_KANJI_START.test(t) && prev.length + t.length <= 4)); // 切れすぎた熟語
     if (attach) out[out.length - 1] = prev + t;
     else out.push(t);
@@ -949,6 +966,8 @@ class Caption {
     this.emotion = emo.type;
     this.strength = emo.strength;
     if (this.finalI > 0.65 || this.strength > 0.6) impact(this);
+    // 確定したページのキーワードの絵文字を、背景の「話題」に加える
+    for (const k of this.chunks) if (k.emoji) addTopic(k.emoji, now);
   }
 
   // 次のページが出るとき、今のページは画面の端に小さく寄せて残す
@@ -1392,7 +1411,73 @@ function currentEmotion() {
   return main ? main.emotion : 'neutral';
 }
 
-function drawBackground(now, emotion, I) {
+/* =========================================================
+ * 背景の話題（会話に出たキーワードの絵文字）
+ *   新しい話題は右側に現れ、ゆっくり左へ流れていく（右＝今、左＝少し前）。
+ *   同じ話題がまた出ると大きくなって右へ戻る → よく出る話題ほど大きく、長く残る
+ * ========================================================= */
+const topics = []; // { emoji, weight, born, last, x, y, phase, pulse }
+
+function addTopic(emoji, now) {
+  const t = topics.find((o) => o.emoji === emoji);
+  if (t) {
+    t.weight = Math.min(t.weight + 1, 6);
+    t.last = now;
+    t.pulse = 1;
+    t.x = Math.min(0.9, t.x + 0.15);
+    return;
+  }
+  // 既存の話題となるべく離れた位置（右寄り）に置く
+  let best = null;
+  let bestD = -1;
+  for (let i = 0; i < 24; i++) {
+    const x = rand(0.62, 0.92);
+    const y = rand(0.12, 0.88);
+    const d = Math.min(1, ...topics.map((o) => Math.hypot((o.x - x) * (W / H), o.y - y)));
+    if (d > bestD) {
+      bestD = d;
+      best = { x, y };
+    }
+  }
+  topics.push({ emoji, weight: 1, born: now, last: now, x: best.x, y: best.y, phase: rand(0, Math.PI * 2), pulse: 1 });
+  // 多すぎたら、あまり話に出ていない・古い話題から消す
+  if (topics.length > CONFIG.topicMax) {
+    const score = (o) => o.weight - (now - o.last) / 30000;
+    topics.splice(topics.indexOf(topics.reduce((a, b) => (score(a) < score(b) ? a : b))), 1);
+  }
+}
+
+function drawTopics(now, dt) {
+  if (!CONFIG.showTopics) return;
+  ctx.save();
+  ctx.font = EMOJI_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (let i = topics.length - 1; i >= 0; i--) {
+    const t = topics[i];
+    const fade = 1 - (now - t.last) / CONFIG.topicLife;
+    if (fade <= 0) {
+      topics.splice(i, 1);
+      continue;
+    }
+    t.x = Math.max(0.06, t.x - (CONFIG.topicDrift * dt) / 1000);
+    t.pulse *= 0.96;
+    const intro = clamp((now - t.born) / 1200, 0, 1);
+    const size = H * (0.1 + 0.045 * t.weight) * (1 + t.pulse * 0.25) * easeOutCubic(intro);
+    const x = t.x * W + Math.sin(now / 9000 + t.phase) * W * 0.02;
+    const y = t.y * H + Math.cos(now / 11000 + t.phase) * H * 0.025;
+    ctx.globalAlpha = CONFIG.topicAlpha * Math.min(1, fade * 3) * (0.7 + 0.08 * t.weight) * intro;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(Math.sin(now / 7000 + t.phase) * 0.12);
+    ctx.scale(size / U, size / U);
+    ctx.fillText(t.emoji, 0, 0);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawBackground(now, emotion, I, dt) {
   const e = EMOTIONS[emotion];
   // ほぼ一定の暗い背景に、感情の色をうっすら乗せる（ゆっくり切り替わる）
   ctx.fillStyle = '#0a0a12';
@@ -1407,6 +1492,9 @@ function drawBackground(now, emotion, I) {
   ctx.fillStyle = rg;
   ctx.fillRect(0, 0, W, H);
   ctx.globalAlpha = 1;
+
+  // 会話の話題（キーワードの絵文字）を薄く
+  drawTopics(now, dt);
 
   // 集中線（驚き・怒りで強く叫んだときだけ）
   const want = (emotion === 'surprise' || emotion === 'anger') && I > 0.55 ? (I - 0.55) * 2.2 : 0;
@@ -1968,7 +2056,7 @@ function drawParticles(dt) {
 function render(now, dt) {
   const emotion = currentEmotion();
   const I = features.intensity;
-  drawBackground(now, emotion, I);
+  drawBackground(now, emotion, I, dt);
 
   // カメラワーク: ごくゆっくり動き、単語が出るたびに少し寄る
   cam.punch = Math.min(cam.punch, 0.06) * 0.88;
@@ -2073,6 +2161,9 @@ function updateHud(now) {
     `<div class="row"><span class="label">話者</span><span>${
       spk.list.map((s) => `<span style="color:${s.color}">${s.id === spk.active ? '●' : ''}${s.name}(${Math.pow(2, s.pitch).toFixed(0)}Hz)</span>`).join(' ') || 'まだいません'
     } / 顔 ${face.landmarker ? face.tracks.length : '-'}</span></div>` +
+    `<div class="row"><span class="label">話題</span><span>${
+      [...topics].sort((a, b) => b.weight - a.weight).map((t) => `${t.emoji}${t.weight}`).join(' ') || 'なし'
+    }</span></div>` +
     (words ? `<div class="words">${words}</div>` : '');
 }
 
@@ -2133,7 +2224,12 @@ window.addEventListener('keydown', (e) => {
     case 'c':
     case 'C':
       captions.length = 0;
+      topics.length = 0;
       liveCaption = null;
+      break;
+    case 't':
+    case 'T':
+      CONFIG.showTopics = !CONFIG.showTopics;
       break;
     case 'v':
     case 'V':
