@@ -197,6 +197,19 @@ kbd {
   text-align: right;
 }
 
+#hud .words {
+  margin-top: 6px;
+  max-width: 420px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+#hud .words small {
+  opacity: 0.6;
+  font-size: 11px;
+  margin-right: 4px;
+}
+
 /* ---------- 手入力フォーム ---------- */
 #textForm {
   position: fixed;
