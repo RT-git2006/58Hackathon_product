@@ -1,13 +1,20 @@
-// Unicode CLDR の日本語絵文字キーワードから、「単語 → 絵文字」の対応表 emoji-ja.js を作る
+// Unicode CLDR の日本語絵文字キーワードと Unicode の絵文字分類から、emoji-ja.js を作る
 //   node tools/build-emoji-ja.js
-// データ: CLDR annotations (Unicode License v3) https://github.com/unicode-org/cldr-json
+//   - CLDR_EMOJI_JA  : 日本語の単語 → 絵文字
+//   - CLDR_EMOJI_CAT : 絵文字 → 字幕のカテゴリ（lexicon.js の CATEGORIES。辞書に無い単語の雰囲気判定に使う）
+//   - CLDR_EMOJI_FACE: 顔・ハートなど「気分」を表す絵文字（話題の要約では控えめに扱う）
+// データ: Unicode CLDR annotations / emoji-test.txt (Unicode License v3)
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '48.2.0';
-const URL = `https://cdn.jsdelivr.net/npm/cldr-annotations-full@${VERSION}/annotations/ja/annotations.json`;
+const CLDR_VERSION = '48.2.0';
+const EMOJI_VERSION = '16.0';
+const CLDR_URL = `https://cdn.jsdelivr.net/npm/cldr-annotations-full@${CLDR_VERSION}/annotations/ja/annotations.json`;
+const TEST_URL = `https://unicode.org/Public/emoji/${EMOJI_VERSION}/emoji-test.txt`;
+// Windows 11 の Segoe UI Emoji などで表示できるのは、おおむね Emoji 14.0 まで
+const MAX_EMOJI_VERSION = 14.0;
 
 // 意味が広すぎて、どの絵文字にするか決められない単語
 const GENERIC = new Set([
@@ -19,28 +26,66 @@ const GENERIC = new Set([
 const RE_HIRA = /^[ぁ-ゟー]+$/;
 const RE_KANJI1 = /^[一-鿿]$/;
 const ZWJ = '‍';
+const strip = (e) => e.replace(/️/g, '');
 
-// Windows 11 の Segoe UI Emoji などで表示できない新しい絵文字（Emoji 15 以降）は使わない。
-// U+1FA70–1FAFF のブロックは、Emoji 14 までに割り当てられた範囲だけ許可する
-const ALLOWED_1FA = [[0x70, 0x74], [0x78, 0x7c], [0x80, 0x86], [0x90, 0xac], [0xb0, 0xba], [0xc0, 0xc5], [0xd0, 0xd9], [0xe0, 0xe7], [0xf0, 0xf6]];
-// Emoji 15.1 の合成絵文字（首振り・ライム・不死鳥・切れた鎖 など）に使われる部品
-const NEW_PARTS = [0x2194, 0x2195, 0x1f7e9, 0x1f7eb, 0x1f525, 0x1f4a5];
+// 絵文字の分類（subgroup）→ 字幕のカテゴリ
+const SUBGROUP_CAT = {
+  'face-smiling': 'joy', 'face-affection': 'love', 'face-tongue': 'funny', 'face-sleepy': 'sad', 'face-unwell': 'sad',
+  'face-hat': 'joy', 'face-glasses': 'cool', 'face-concerned': 'sad', 'face-negative': 'anger', 'face-costume': 'fear',
+  'cat-face': 'love', 'monkey-face': 'funny', heart: 'love', 'person-fantasy': 'cool', 'person-sport': 'power', family: 'love',
+  'animal-mammal': 'nature', 'animal-bird': 'nature', 'animal-amphibian': 'nature', 'animal-reptile': 'nature',
+  'animal-marine': 'nature', 'animal-bug': 'nature', 'plant-flower': 'nature', 'plant-other': 'nature',
+  'food-fruit': 'food', 'food-vegetable': 'food', 'food-prepared': 'food', 'food-asian': 'food', 'food-sweet': 'food',
+  drink: 'food', dishware: 'food', 'place-geographic': 'nature', 'place-religious': 'cool', 'sky & weather': 'nature',
+  'transport-ground': 'tech', 'transport-water': 'tech', 'transport-air': 'tech', event: 'joy', 'award-medal': 'joy',
+  sport: 'power', game: 'tech', music: 'joy', 'musical-instrument': 'joy', phone: 'tech', computer: 'tech',
+  'light & video': 'tech', money: 'joy', tool: 'power', science: 'tech', medical: 'sad',
+};
+// 分類だけでは合わない絵文字
+const OVERRIDE_CAT = {
+  '😮': 'surprise', '😯': 'surprise', '😲': 'surprise', '😳': 'surprise', '🤯': 'surprise', '😨': 'fear', '😰': 'fear',
+  '😱': 'fear', '😖': 'fear', '💥': 'power', '💢': 'anger', '💯': 'joy', '💤': 'sad', '🔪': 'fear', '🪓': 'fear',
+  '🗡': 'cool', '⚔': 'cool', '🛡': 'cool', '💣': 'power', '⚰': 'fear', '⚱': 'fear', '🧟': 'fear', '🧛': 'fear',
+  '👻': 'fear', '💀': 'fear', '☠': 'fear', '🎃': 'fear', '👹': 'fear', '👺': 'fear', '🔥': 'power', '⚡': 'power',
+  '🌋': 'power', '🎉': 'joy', '🎊': 'joy', '😂': 'funny', '🤣': 'funny', '💔': 'sad', '🕯': 'fear', '🩸': 'fear',
+  '🌧': 'sad', '☔': 'sad', '🌩': 'fear', '🌪': 'power', '🌈': 'joy', '☀': 'joy', '🎲': 'cool', '🔮': 'cool', '🪄': 'cool',
+};
+const FACE_SUBGROUPS = new Set(['face-smiling', 'face-affection', 'face-tongue', 'face-hand', 'face-neutral-skeptical',
+  'face-sleepy', 'face-unwell', 'face-hat', 'face-glasses', 'face-concerned', 'face-negative', 'cat-face', 'monkey-face',
+  'heart', 'emotion', 'hand-fingers-open', 'hand-fingers-partial', 'hand-single-finger', 'hand-fingers-closed', 'hands',
+  'person-gesture']);
 
-function displayable(emoji) {
-  const cps = [...emoji].map((c) => c.codePointAt(0));
-  if (emoji.includes(ZWJ) && cps.some((cp) => NEW_PARTS.includes(cp))) return false;
-  return cps.every((cp) => cp < 0x1fa70 || cp > 0x1faff || ALLOWED_1FA.some(([a, b]) => cp - 0x1fa00 >= a && cp - 0x1fa00 <= b));
+// emoji-test.txt: 絵文字 → { subgroup, version }
+function parseEmojiTest(text) {
+  const info = new Map();
+  let subgroup = '';
+  for (const line of text.split('\n')) {
+    if (line.startsWith('# subgroup:')) subgroup = line.slice(11).trim();
+    const m = line.match(/^[0-9A-F ]+;\s*(fully-qualified|minimally-qualified|unqualified)\s*#\s*(\S+)\s+E(\d+\.\d+)/);
+    if (m) info.set(strip(m[2]), { subgroup, version: parseFloat(m[3]) });
+  }
+  return info;
+}
+
+async function fetchOk(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${res.status} ${url}`);
+  return res;
 }
 
 async function main() {
-  const res = await fetch(URL);
-  if (!res.ok) throw new Error(`${res.status} ${URL}`);
-  const json = await res.json();
-  const ann = json.annotations.annotations;
+  const ann = (await (await fetchOk(CLDR_URL)).json()).annotations.annotations;
+  const info = parseEmojiTest(await (await fetchOk(TEST_URL)).text());
 
   const byWord = new Map(); // 単語 → 絵文字の候補 [{ emoji, tts, n }]
+  const cat = {};
+  const faces = [];
   for (const [emoji, a] of Object.entries(ann)) {
-    if (!displayable(emoji)) continue;
+    const inf = info.get(strip(emoji));
+    if (!inf || inf.version > MAX_EMOJI_VERSION) continue; // 表示できない新しい絵文字は使わない
+    const c = OVERRIDE_CAT[strip(emoji)] || SUBGROUP_CAT[inf.subgroup];
+    if (c) cat[strip(emoji)] = c;
+    if (FACE_SUBGROUPS.has(inf.subgroup)) faces.push(strip(emoji));
     const tts = (a.tts || [])[0] || '';
     const words = a.default || [];
     for (const raw of words) {
@@ -60,26 +105,38 @@ async function main() {
     if (c.tts.includes(w)) return 100 + c.tts.length + (composite(c.emoji) ? 50 : 0);
     return 1000 + c.n + (composite(c.emoji) ? 500 : 0);
   };
-  const out = {};
+  const words = {};
   for (const [w, list] of byWord) {
     list.sort((a, b) => score(a, w) - score(b, w));
     // 名前に単語を含む絵文字が無く、候補が多すぎる単語は、意味が広すぎるので捨てる
     if (score(list[0], w) >= 1000 && list.length > 6) continue;
-    out[w] = list[0].emoji;
+    words[w] = list[0].emoji;
   }
-  const keys = Object.keys(out).sort();
-  const body = keys.map((k) => `  ${JSON.stringify(k)}: ${JSON.stringify(out[k])},`).join('\n');
+
+  const obj = (o) =>
+    Object.keys(o)
+      .sort()
+      .map((k) => `  ${JSON.stringify(k)}: ${JSON.stringify(o[k])},`)
+      .join('\n');
   const file = `// 自動生成: node tools/build-emoji-ja.js（手で編集しない）
-// 出典: Unicode CLDR ${VERSION} annotations (ja) — Unicode License v3 https://www.unicode.org/license.txt
+// 出典: Unicode CLDR ${CLDR_VERSION} annotations (ja), Unicode emoji-test.txt ${EMOJI_VERSION} — Unicode License v3 https://www.unicode.org/license.txt
 'use strict';
 
-// 日本語の単語 → 絵文字（${keys.length} 語）
+// 日本語の単語 → 絵文字（${Object.keys(words).length} 語）
 const CLDR_EMOJI_JA = {
-${body}
+${obj(words)}
 };
+
+// 絵文字 → 字幕のカテゴリ（${Object.keys(cat).length} 個）
+const CLDR_EMOJI_CAT = {
+${obj(cat)}
+};
+
+// 顔・ハート・手ぶりなど「気分」を表す絵文字（話題の要約では控えめに扱う）
+const CLDR_EMOJI_FACE = ${JSON.stringify(faces.join(''))};
 `;
   fs.writeFileSync(path.join(__dirname, '..', 'emoji-ja.js'), file);
-  console.log(`emoji-ja.js: ${keys.length} words`);
+  console.log(`emoji-ja.js: ${Object.keys(words).length} words, ${Object.keys(cat).length} categorized emoji, ${faces.length} faces`);
 }
 
 main().catch((err) => {

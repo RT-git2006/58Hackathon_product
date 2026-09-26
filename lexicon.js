@@ -298,6 +298,10 @@ function classifyChunk(text) {
     if (cat) add(cat, 1.5);
   }
   if (RE_SOUND.test(text)) add('sound', 3);
+  // 付く絵文字の分類からも推定する（CLDR の約 4000 語。辞書に無い単語でも、絵文字があれば内容と雰囲気が分かる）
+  const e = findEmoji(text);
+  const ec = e && typeof CLDR_EMOJI_CAT !== 'undefined' && CLDR_EMOJI_CAT[e.replace(/️/g, '')];
+  if (ec) add(ec, 2.5);
 
   let best = null;
   let bestScore = 0;
@@ -488,3 +492,6 @@ function findEmoji(text) {
   emojiCache.set(text, found);
   return found;
 }
+
+// 音声認識へのヒントにする単語（ブラウザが対応していれば、これらの単語が認識されやすくなる）
+const HINT_WORDS = [...new Set(Object.values(WORDS).flat())].filter((w) => w.length >= 2 && !/[!！?？、。]/.test(w));
