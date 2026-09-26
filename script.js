@@ -43,6 +43,7 @@ const CONFIG = {
   summaryHalfLife: 20000, // 中央の要約の絵文字が、前の話題を引きずる時間の目安(ms)
   summaryAlpha: 0.13, // 中央の要約の絵文字の濃さ
   showTopics: true, // 会話に出た話題の絵文字を背景に表示する（T キーで切替）
+  showLog: false, // 右上の会話の履歴を表示する（L キーで切替）。認識の間違いが目立たないよう、最初は隠しておく
   topicLife: 30000, // 話題の絵文字が、最後に話に出てから消えるまで(ms)。だんだん薄くなって消える
   topicMax: 14, // 背景に出す話題の数の上限
   topicAlpha: 0.14, // 背景の絵文字の濃さ
@@ -1039,7 +1040,6 @@ function addLog(c) {
   item.el.textContent = item.text;
   item.el.style.borderColor = EMOTIONS[c.emotion].color;
   while (logItems.length > CONFIG.logMax) logItems.shift().el.remove();
-  logEl.hidden = false;
 }
 
 function updateLog(now) {
@@ -1051,14 +1051,14 @@ function updateLog(now) {
       logItems.splice(i, 1);
     } else it.el.style.opacity = String(clamp((CONFIG.logLife - age) / 5000, 0, 1));
   }
-  if (!logItems.length) logEl.hidden = true;
-  logReserve = lerp(logReserve, logItems.length && !logEl.hidden ? W * (CONFIG.logWidth + 0.01) : 0, 0.1);
+  // 隠している間も履歴はためておき、L キーを押したらすぐ読み返せるようにする
+  logEl.hidden = !CONFIG.showLog || !logItems.length;
+  logReserve = lerp(logReserve, logEl.hidden ? 0 : W * (CONFIG.logWidth + 0.01), 0.1);
 }
 
 function clearLog() {
   for (const it of logItems) it.el.remove();
   logItems.length = 0;
-  logEl.hidden = true;
 }
 
 function newCaption(now) {
@@ -2176,6 +2176,11 @@ window.addEventListener('keydown', (e) => {
     case 't':
     case 'T':
       CONFIG.showTopics = !CONFIG.showTopics;
+      break;
+    case 'l':
+    case 'L':
+      CONFIG.showLog = !CONFIG.showLog;
+      if (CONFIG.showLog && !logItems.length) toast('まだ会話の履歴はありません');
       break;
     case 'v':
     case 'V':
