@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>激面白字幕メーカー</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 字幕を描画するメインキャンバス -->
+  <canvas id="stage"></canvas>
+
+  <!-- 起動画面（マイク許可にはユーザー操作が必要） -->
+  <div id="overlay">
+    <h1 class="title"><span class="shake">激</span>面白字幕メーカー</h1>
+    <p class="lead">声の大きさ・高さ・速さを読み取って、感情を大げさに字幕にします。</p>
+    <button id="startBtn">はじめる</button>
+    <ul class="keys">
+      <li><kbd>F</kbd> フルスクリーン切替（F11 でも可）</li>
+      <li><kbd>D</kbd> 解析値の表示/非表示</li>
+      <li><kbd>Enter</kbd> テキストを手入力（音声認識が使えない時の代替）</li>
+      <li><kbd>C</kbd> 字幕をクリア</li>
+    </ul>
+    <p class="note">Chrome 推奨。音声認識にはインターネット接続が必要です。</p>
+  </div>
+
+  <!-- デバッグ用の解析値表示 -->
+  <div id="hud" hidden></div>
+
+  <!-- 手入力フォーム -->
+  <form id="textForm" hidden>
+    <input id="textInput" autocomplete="off" placeholder="テキストを入力して Enter（Esc で閉じる）">
+  </form>
+
+  <div id="toast"></div>
+
+  <script src="script.js"></script>
+</body>
+</html>

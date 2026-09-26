@@ -1,0 +1,7 @@
+.env
+node_modules/
+.DS_Store
+Thumbs.db
+
+# 参考論文（著作物・サイズが大きいため管理対象外）
+*.pdf
