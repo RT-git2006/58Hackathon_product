@@ -50,6 +50,11 @@ const CONFIG = {
   topicDrift: 0.0025, // 話題が左へ流れる速さ（画面幅/秒）。右が今の話題、左が少し前の話題
   mediapipeVersion: '0.10.14',
   faceModel: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+  gestures: true, // 腕の「まる」「ばつ」を認識する
+  poseModel: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+  poseInterval: 120, // 体の骨格の認識の間隔(ms)。表情の認識と交互に動かして、描画を重くしない
+  gestureHold: 300, // この時間(ms)同じポーズを続けたら「まる」「ばつ」と判定する（一瞬の腕の動きで誤反応しない）
+  gestureCooldown: 1500, // 一度判定したら、この時間(ms)は次の判定をしない
 };
 const U = CONFIG.U;
 
@@ -288,7 +293,7 @@ async function initFace() {
     toast('表情の認識を準備中…', 10000);
     const base = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${CONFIG.mediapipeVersion}`;
     // classic script から ES モジュールを動的 import（ビルド不要のまま使うため）
-    const { FilesetResolver, FaceLandmarker } = await import(`${base}/vision_bundle.mjs`);
+    const { FilesetResolver, FaceLandmarker, PoseLandmarker } = await import(`${base}/vision_bundle.mjs`);
     const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
     const create = (delegate) =>
       FaceLandmarker.createFromOptions(fileset, {
@@ -302,6 +307,22 @@ async function initFace() {
     camView.width = 320;
     camView.height = 240;
     toast('表情の認識 ON（V キーでカメラ表示）');
+    // 腕の「まる」「ばつ」（体の骨格の認識）。読み込めなくても表情の認識はそのまま使う
+    if (CONFIG.gestures) {
+      try {
+        const createPose = (delegate) =>
+          PoseLandmarker.createFromOptions(fileset, {
+            baseOptions: { modelAssetPath: CONFIG.poseModel, delegate },
+            runningMode: 'VIDEO',
+            numPoses: 1,
+          });
+        gesture.pose = await createPose('GPU').catch(() => createPose('CPU'));
+        toast('表情と手の合図（まる・ばつ）の認識 ON（V キーでカメラ表示）');
+      } catch (err) {
+        console.error(err);
+        toast('手の合図の認識を読み込めませんでした（表情の認識は使えます）', 5000);
+      }
+    }
   } catch (err) {
     console.error(err);
     toast('表情の認識を読み込めませんでした（声だけで動作します）', 5000);
@@ -375,6 +396,132 @@ function updateFace(now) {
   face.prevTime = now;
 }
 
+/* =========================================================
+ * 手の合図: 腕の「まる」「ばつ」（MediaPipe Pose Landmarker）
+ *   まる: 両手を頭の上で近づけ、ひじを横に張る（腕で大きな輪）
+ *   ばつ: 胸〜顔の前で両腕を交差させる（手首がひじより上。腕組みとは区別する）
+ *   gestureHold の間続いたら判定し、画面に大きなスタンプを出す
+ * ========================================================= */
+const gesture = { pose: null, lastRun: 0, lastVideoTime: -1, lm: null, cand: '', candSince: 0, armed: true, firedAt: 0, stamp: null };
+const GESTURE_LABEL = { maru: 'まる', batsu: 'ばつ' };
+
+function classifyPose(lm) {
+  const P = (i) => lm[i];
+  const seen = (...ids) => ids.every((i) => (lm[i].visibility ?? 1) > 0.5);
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  // 11/12: 肩 13/14: ひじ 15/16: 手首 0: 鼻（画像の座標。y は下向き）
+  const ls = P(11), rs = P(12), le = P(13), re = P(14), lw = P(15), rw = P(16), nose = P(0);
+  if (!seen(11, 12, 13, 14)) return '';
+  const sw = Math.max(0.05, dist(ls, rs)); // 肩幅を物差しにする（カメラからの距離によらない）
+  const shoulderY = (ls.y + rs.y) / 2;
+  const midX = (ls.x + rs.x) / 2;
+  if (seen(15, 16)) {
+    // まる: 両手首が鼻より上で近く、ひじが肩より外に張り出して高い
+    if (lw.y < nose.y - sw * 0.2 && rw.y < nose.y - sw * 0.2 && dist(lw, rw) < sw * 1.0 &&
+        Math.abs(le.x - re.x) > sw * 1.3 && le.y < shoulderY + sw * 0.3 && re.y < shoulderY + sw * 0.3) return 'maru';
+    // ばつ: 手首の左右が肩の左右と入れ替わり（交差）、手首は胸〜顔の高さで体の前、ひじより上
+    const crossed = (lw.x - rw.x) * (ls.x - rs.x) < 0;
+    const front = Math.abs((lw.x + rw.x) / 2 - midX) < sw * 0.6;
+    const height = [lw, rw].every((w) => w.y > shoulderY - sw * 1.0 && w.y < shoulderY + sw * 0.9);
+    const raised = lw.y < le.y - sw * 0.15 && rw.y < re.y - sw * 0.15;
+    if (crossed && front && height && raised) return 'batsu';
+  }
+  return '';
+}
+
+function updatePose(now) {
+  if (!gesture.pose || video.readyState < 2 || video.currentTime === gesture.lastVideoTime) return;
+  if (now - gesture.lastRun < CONFIG.poseInterval) return;
+  gesture.lastRun = now;
+  gesture.lastVideoTime = video.currentTime;
+  const res = gesture.pose.detectForVideo(video, now);
+  const lm = res.landmarks && res.landmarks[0];
+  gesture.lm = lm || null;
+  const kind = lm ? classifyPose(lm) : '';
+  if (kind !== gesture.cand) {
+    gesture.cand = kind;
+    gesture.candSince = now;
+  }
+  // 腕を下ろしたら、次の合図を受け付ける（出しっぱなしで何度も判定しない）
+  if (!kind) {
+    gesture.armed = true;
+    return;
+  }
+  if (gesture.armed && now - gesture.candSince >= CONFIG.gestureHold && now - gesture.firedAt > CONFIG.gestureCooldown) {
+    gesture.armed = false;
+    gesture.firedAt = now;
+    fireGesture(kind, now);
+  }
+}
+
+// 合図が出たら: 大きなスタンプ、会話の雰囲気、右上の会話の履歴に反映する
+function fireGesture(kind, now) {
+  gesture.stamp = { kind, at: now };
+  const maru = kind === 'maru';
+  atmosphere.score[maru ? 'happy' : 'serious'] += 1.5;
+  addLogText(`g${now}`, maru ? '⭕ まる！' : '❌ ばつ！', maru ? 'joy' : 'surprise');
+  if (!CONFIG.calm) {
+    cam.punch += 0.03;
+    fx.flash = Math.max(fx.flash, 0.12);
+    fx.flashColor = maru ? '#ff3b3b' : '#2f7bff';
+    burstParticles(W / 2, H * 0.46, 24, maru ? 'joy' : 'surprise');
+  }
+}
+
+// 画面中央の「まる」「ばつ」のスタンプ（ポンと出て、しばらくして消える）
+function drawStamp(now) {
+  const st = gesture.stamp;
+  if (!st) return;
+  const t = (now - st.at) / 1000;
+  const life = 1.6;
+  if (t > life) {
+    gesture.stamp = null;
+    return;
+  }
+  const maru = st.kind === 'maru';
+  const pop = t < 0.35 ? easeOutBack(t / 0.35, 2.5) : 1;
+  const R = Math.min(W, H) * 0.26 * Math.max(0.01, pop);
+  ctx.save();
+  ctx.globalAlpha = t > life - 0.4 ? (life - t) / 0.4 : 1;
+  ctx.translate(W / 2, H * 0.44);
+  ctx.rotate(maru ? -0.08 : 0.06);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const path = maru
+    ? () => {
+        ctx.beginPath();
+        ctx.arc(0, 0, R, 0, Math.PI * 2);
+      }
+    : () => {
+        const d = R * 0.78;
+        ctx.beginPath();
+        ctx.moveTo(-d, -d);
+        ctx.lineTo(d, d);
+        ctx.moveTo(d, -d);
+        ctx.lineTo(-d, d);
+      };
+  const w = R * (maru ? 0.22 : 0.26);
+  // 黒フチ → 色の線（字幕と同じテロップ風）
+  path();
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = w + R * 0.12;
+  ctx.stroke();
+  path();
+  ctx.strokeStyle = maru ? '#ff3b3b' : '#2f7bff';
+  ctx.lineWidth = w;
+  ctx.stroke();
+  // 「まる！」「ばつ！」の文字
+  ctx.font = fontSpec('Dela Gothic One', R * 0.36);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = R * 0.09;
+  ctx.strokeText(maru ? 'まる！' : 'ばつ！', 0, R * 1.32);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(maru ? 'まる！' : 'ばつ！', 0, R * 1.32);
+  ctx.restore();
+}
+
 // いちばん強い表情（真顔を含む）
 function currentExpression() {
   let best = 'neutral';
@@ -409,11 +556,25 @@ function drawCamView() {
     FACE_OVAL.forEach((id, i) => (i ? camCtx.lineTo(lm[id].x * w, lm[id].y * h) : camCtx.moveTo(lm[id].x * w, lm[id].y * h)));
     camCtx.stroke();
   }
+  // 腕の線（肩 → ひじ → 手首）。合図を判定中は合図の色
+  const pl = gesture.lm;
+  if (pl) {
+    camCtx.strokeStyle = gesture.cand === 'maru' ? '#ff3b3b' : gesture.cand === 'batsu' ? '#2f7bff' : '#ffffff';
+    camCtx.lineWidth = 4;
+    camCtx.beginPath();
+    for (const arm of [[15, 13, 11, 12, 14, 16]]) arm.forEach((id, i) => (i ? camCtx.lineTo(pl[id].x * w, pl[id].y * h) : camCtx.moveTo(pl[id].x * w, pl[id].y * h)));
+    camCtx.stroke();
+  }
   camCtx.restore();
   if (lm) {
     camCtx.font = 'bold 18px sans-serif';
     camCtx.fillStyle = color;
     camCtx.fillText(EXPRESSION_LABEL[expr], 10, 24);
+  }
+  if (gesture.cand) {
+    camCtx.font = 'bold 22px sans-serif';
+    camCtx.fillStyle = gesture.cand === 'maru' ? '#ff3b3b' : '#2f7bff';
+    camCtx.fillText(gesture.cand === 'maru' ? '⭕ まる' : '❌ ばつ', 10, h - 14);
   }
 }
 
@@ -1091,22 +1252,26 @@ let logReserve = 0; // 字幕が避ける右側の幅(px)
 let utterCount = 0; // 発言の通し番号（ページがどの発言のものか）
 
 function addLog(c) {
-  const text = c.chunks.map((k) => k.text + (k.emoji || '')).join('');
+  addLogText(c.utter, c.chunks.map((k) => k.text + (k.emoji || '')).join(''), c.emotion);
+}
+
+// key が同じ間は 1 つの吹き出しに続けて書く（同じ発言が何ページかに分かれたとき）
+function addLogText(key, text, emotion) {
   if (!text) return;
   const now = performance.now();
   let item = logItems[logItems.length - 1];
-  if (!item || item.utter !== c.utter) {
+  if (!item || item.utter !== key) {
     const el = document.createElement('div');
     el.className = 'log-item';
     logEl.appendChild(el);
-    item = { utter: c.utter, el, text: '', last: now };
+    item = { utter: key, el, text: '', last: now };
     logItems.push(item);
   }
   item.text += text;
   item.last = now;
   item.el.textContent = item.text;
   // 吹き出しの色は、字幕の吹き出しと同じく感情で決める
-  const e = EMOTIONS[c.emotion];
+  const e = EMOTIONS[emotion];
   item.el.style.setProperty('--fill', e.fill);
   item.el.style.setProperty('--line', e.line);
   item.el.style.setProperty('--text', isDark(e.fill) ? '#fff' : '#111');
@@ -2097,6 +2262,7 @@ function render(now, dt) {
   for (const c of captions) if (c.state === 'leaving') drawCaption(c, now);
   for (const c of captions) if (c.state === 'main') drawCaption(c, now);
   drawParticles(dt);
+  drawStamp(now);
   ctx.restore();
 
   // 下端の音量バー（聞いていることが分かるように）
@@ -2120,7 +2286,10 @@ function frame() {
   lastTime = now;
 
   updateAudio();
+  // 表情の認識と体の骨格の認識は、同じフレームで両方動かさない（重くしない）
+  const faceRan = face.lastRun;
   updateFace(now);
+  if (face.lastRun === faceRan) updatePose(now);
   feedFaceAtmosphere(dt);
   updateLog(now);
 
@@ -2177,6 +2346,7 @@ function updateHud(now) {
       .map(([k, v]) => bar(EXPRESSION_LABEL[k], v, v.toFixed(2), EMOTIONS[k].glow))
       .join('') +
     bar('頭の動き', f.motion, hasFace ? f.motion.toFixed(2) : '—', '#b98cff') +
+    row('手の合図', !gesture.pose ? '読み込み前' : !gesture.lm ? '体が見えない' : gesture.cand ? chip(GESTURE_LABEL[gesture.cand], gesture.cand === 'maru' ? '#ff3b3b' : '#2f7bff') : 'なし') +
     sticker('見せ方') +
     row('感情', chip(EMOTIONS[emo].label, EMOTIONS[emo].color)) +
     (main ? row('ページ', main.lookLabel) : '') +
