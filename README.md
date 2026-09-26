@@ -10,11 +10,22 @@
 ビルド不要。ローカルサーバーで配信して Chrome で開く（マイク許可のため `localhost` 推奨）。
 
 ```sh
-python -m http.server 8000
+node server.js
 # → Chrome で http://localhost:8000 を開き「はじめる」を押す
 ```
 
-- 音声認識（Web Speech API）は Chrome ではインターネット接続が必要。
+- Node.js 18 以上。依存パッケージは無い（`npm install` 不要）。
+- 音声認識は、`.env` に Azure AI Speech のキーがあれば **Azure AI Speech**、なければ **Chrome の Web Speech API** を使う。Azure が途中で止まったときも Chrome に切り替わる。今どちらを使っているかは `D` キーの「認識」の行に出る。
+- `python -m http.server 8000` でも起動できる（この場合は Chrome の音声認識だけ）。
+- 音声認識はどちらもインターネット接続が必要。
+
+### Azure AI Speech を使う（日本語の認識精度が上がる）
+
+1. Azure ポータルで「Speech」リソースを作る（価格レベル **Free F0**: 毎月 5 時間まで無料。場所は Japan East など）。
+2. `.env.example` を `.env` にコピーし、リソースの「キーとエンドポイント」にあるキーと場所（例: `japaneast`）を書く。`.env` は git に入れない。
+3. `node server.js` で起動すると、コンソールに `音声認識: Azure AI Speech（japaneast）` と出る。
+
+キーはブラウザに渡さない。`server.js` がキーで 10 分有効の一時トークンを発行し（`/api/speech-token`）、ブラウザはそれで Azure に接続する（9 分ごとに取り直す）。辞書の単語は認識のヒント（フレーズリスト）として渡す。Azure を使わずに Chrome の音声認識に固定したいときは、`script.js` の `CONFIG.asr` を `'webspeech'` にする。
 - 表情の認識（MediaPipe Tasks Vision の Face Landmarker）は CDN からモデルと wasm を読み込むため、初回起動時もネット接続が必要。カメラが無い/読み込めない場合は声だけで動作する。
 - 字幕フォント（Dela Gothic One ほか約 20 種の日本語フォント）は Google Fonts から読み込む。オフライン時は代替フォントで動作する。
 
@@ -38,11 +49,13 @@ python -m http.server 8000
 | `style.css` | 起動画面・HUD・入力欄のスタイル |
 | `emoji-ja.js` | 日本語の単語 → 絵文字（約 4000 語）と、絵文字 → カテゴリの対応表。`tools/build-emoji-ja.js` で Unicode CLDR / emoji-test.txt から自動生成 |
 | `lexicon.js` | 語彙辞書（単語・漢字 → カテゴリ）と、カテゴリごとのフォント・配色・テロップ装飾 |
+| `server.js` | ローカルサーバー（ファイルの配信と、Azure AI Speech の一時トークンの発行。キーは `.env` から読む） |
+| `.env.example` | `.env` の書き方の見本（Azure のキーと場所） |
 | `script.js` | 音声認識 / 音声解析 / 表情の認識 / 感情推定 / 字幕レイアウト・アニメーション / 吹き出し / メインループ |
 
 ### script.js の処理の流れ
 
-1. **音声認識**: `webkitSpeechRecognition`（`ja-JP`, continuous, interim）。途中結果は「発話中の字幕」として表示し、確定したら固定する。止まったら自動再開。
+1. **音声認識**: Azure AI Speech（`SpeechRecognizer` の連続認識、`ja-JP`）か、使えなければ Chrome の `webkitSpeechRecognition`（continuous, interim。止まったら自動再開）。途中結果は「発話中の字幕」として表示し、確定したら固定する。確定結果に句読点が付いたり言い直しが直ったりしても、句読点を数えずに位置を合わせ直すので、ページの続きがずれない（`alignStart`）。
 2. **音声解析**: `AnalyserNode` の波形から RMS → dB → 0..1 の音量。自己相関でピッチを推定し、話者の平常時ピッチとの比を「興奮度」とする。話速は発話中の文字数 / 経過時間。
 3. **表情の認識**: MediaPipe Face Landmarker（VIDEO モード）の顔のブレンドシェイプ（口角の上がり・下がり、眉の上がり・下がり、目の見開き、鼻のしわ 等）から、笑顔 / 驚き顔 / しかめ面 / 悲しい顔 / こわばり / 真顔 を 0..1 で出す。人によって普段の顔が違うので、その人の平常時の顔を基準に差分を見る（基準は自動で追従）。頭の動き（鼻先の速さを顔の幅で正規化）も取る。
 4. **単語分割とカテゴリ推定**: ブラウザ内蔵の辞書 `Intl.Segmenter` で単語に分け、助詞・送り仮名を前の単語にくっつけて文節単位にする。各単語を `lexicon.js` の単語辞書と**漢字 1 文字ごとの意味**（例: 霊→恐怖、炎→パワー、桜→自然）で 恐怖 / 驚き / 喜び / 怒り / 悲しみ / 好き / パワー / ファンタジー / 食べ物 / 自然 / デジタル / おもしろ / 擬音 / カタカナ語 に分類する。辞書に無い単語でも漢字から推定できる。
