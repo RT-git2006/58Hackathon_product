@@ -4,8 +4,8 @@
  * 激面白字幕メーカー
  *  - Web Speech API : 音声認識（#1）
  *  - Web Audio API  : 音量・ピッチ・話速の解析（#2）
- *  - MediaPipe Pose : 体の動きの大きさ（#3）
- *  - 声+動きの複合スコアで感情の種類・強さを推定（#4）
+ *  - MediaPipe Face : 表情（笑顔・しかめ面・真顔 など）と頭の動き（#3）
+ *  - 声+表情の複合スコアで感情の種類・強さを推定（#4）
  *  - Canvas         : リリックビデオ風に動く字幕（#5）・感情で形が変わる吹き出し（#7）
  *  - フルスクリーン   : F キー / F11（#6）
  * 語彙・フォント・配色は lexicon.js
@@ -30,7 +30,9 @@ const CONFIG = {
   verticalWordChance: 0.18, // 横書きのページの中で、単語だけ縦にする確率
   pitchMin: 80,
   pitchMax: 600,
-  poseInterval: 50, // 姿勢推定の間隔(ms)。毎フレーム回すと描画が重くなる
+  faceInterval: 50, // 表情の認識の間隔(ms)。毎フレーム回すと描画が重くなる
+  faceGain: 1.6, // 表情の感度（大きいほど、少しの表情の変化でも反応する）
+  faceMoodRate: 0.2, // 表情が会話の雰囲気（背景の色）に効く強さ
   dockTime: 6000, // 前のページを画面の端に残しておく時間(ms)
   minDock: 1500, // 次のページに押し出されても、最低これだけは端に残す(ms)
   dockArea: 0.04, // 端に寄せたページの大きさ（画面の面積比）
@@ -44,8 +46,7 @@ const CONFIG = {
   topicAlpha: 0.14, // 背景の絵文字の濃さ
   topicDrift: 0.0025, // 話題が左へ流れる速さ（画面幅/秒）。右が今の話題、左が少し前の話題
   mediapipeVersion: '0.10.14',
-  poseModel:
-    'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+  faceModel: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
 };
 const U = CONFIG.U;
 
@@ -151,20 +152,19 @@ const features = {
   rateNorm: 0, // 0..1
   intensity: 0, // 0..1 統合した感情の強さ
   recentPeak: 0, // 直近の intensity の最大値（認識テキストが届く前の叫びを取りこぼさない）
-  // 体の動き（MediaPipe Pose）
-  bodyDetected: false,
-  motion: 0, // 0..1 動きの速さ
-  spread: 0, // 0..1 両手の広がり
-  handsUp: 0, // 0..1 手が頭より上にある度合い
-  handsFace: 0, // 0..1 手で顔を覆っている度合い
+  // 表情と頭の動き（MediaPipe Face Landmarker）
+  faceDetected: false,
+  motion: 0, // 0..1 頭の動きの速さ
+  expr: { joy: 0, surprise: 0, anger: 0, sad: 0, fear: 0, neutral: 0 }, // 0..1 表情ごとの強さ（neutral＝真顔）
 };
 
-// 声と体の動きを 1 つの強さスコアに統合（#4）
-// 声が主役。黙って動いても字幕は出ないが、話しながら動くと強さが増幅される
+// 声と表情・頭の動きを 1 つの強さスコアに統合（#4）
+// 声が主役。黙って表情を変えても字幕は出ないが、表情豊かに話すと強さが増幅される
 function computeIntensity(f) {
   const voice = f.volume * 0.65 + f.pitchExcite * 0.2 + f.rateNorm * 0.15;
-  const body = f.motion * 0.7 + f.spread * 0.3;
-  return clamp(voice * (1 + body * 0.8) + body * voice * 0.3, 0, 1);
+  const e = f.expr;
+  const face = f.motion * 0.5 + Math.max(e.joy, e.surprise, e.anger, e.sad, e.fear) * 0.5;
+  return clamp(voice * (1 + face * 0.8) + face * voice * 0.3, 0, 1);
 }
 
 /* =========================================================
@@ -238,19 +238,34 @@ function detectPitch(buf, sampleRate) {
 }
 
 /* =========================================================
- * MediaPipe Pose Landmarker: 体の動き
+ * MediaPipe Face Landmarker: 表情と頭の動き
+ *   顔の筋肉の動き（ブレンドシェイプ 0..1）から 笑顔 / しかめ面 / 口角が下がる / 目を見開く などを取り、
+ *   喜び・怒り・悲しみ・驚き・恐怖・真顔 のスコアにする。
+ *   人によって普段の顔が違うので、その人の平常時の顔を基準（baseline）にして差分を見る
  * ========================================================= */
 const video = document.getElementById('cam');
 const camView = document.getElementById('camView');
 const camCtx = camView.getContext('2d');
-const body = { landmarker: null, lastVideoTime: -1, lastRun: 0, prev: null, prevTime: 0, lm: null };
+const face = { landmarker: null, lastVideoTime: -1, lastRun: 0, prev: null, prevTime: 0, lm: null, base: {} };
 
-// 動き量の計算に使う点: 鼻・両肩・両肘・両手首
-const MOTION_POINTS = [0, 11, 12, 13, 14, 15, 16];
-// プレビューに描く骨格の線
-const SKELETON = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24]];
+// 使うブレンドシェイプ（左右があるものは平均する）
+const FACE_SHAPES = {
+  smile: ['mouthSmileLeft', 'mouthSmileRight'],
+  frown: ['mouthFrownLeft', 'mouthFrownRight'],
+  browDown: ['browDownLeft', 'browDownRight'],
+  browInnerUp: ['browInnerUp'],
+  browOuterUp: ['browOuterUpLeft', 'browOuterUpRight'],
+  eyeWide: ['eyeWideLeft', 'eyeWideRight'],
+  sneer: ['noseSneerLeft', 'noseSneerRight'],
+  press: ['mouthPressLeft', 'mouthPressRight'],
+  stretch: ['mouthStretchLeft', 'mouthStretchRight'],
+};
+// プレビューに描く顔の輪郭（顔の外周の点）
+const FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149,
+  150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 10];
+const EXPRESSION_LABEL = { joy: '笑顔', surprise: '驚き顔', anger: 'しかめ面', sad: '悲しい顔', fear: 'こわばり', neutral: '真顔' };
 
-async function initBody() {
+async function initFace() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
     video.srcObject = stream;
@@ -262,87 +277,112 @@ async function initBody() {
   }
 
   try {
-    toast('動き検出を準備中…', 10000);
+    toast('表情の認識を準備中…', 10000);
     const base = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${CONFIG.mediapipeVersion}`;
     // classic script から ES モジュールを動的 import（ビルド不要のまま使うため）
-    const { FilesetResolver, PoseLandmarker } = await import(`${base}/vision_bundle.mjs`);
+    const { FilesetResolver, FaceLandmarker } = await import(`${base}/vision_bundle.mjs`);
     const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
     const create = (delegate) =>
-      PoseLandmarker.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: CONFIG.poseModel, delegate },
+      FaceLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: CONFIG.faceModel, delegate },
         runningMode: 'VIDEO',
-        numPoses: 1,
+        numFaces: 1,
+        outputFaceBlendshapes: true,
       });
     // GPU が使えない PC では CPU にフォールバック
-    body.landmarker = await create('GPU').catch(() => create('CPU'));
+    face.landmarker = await create('GPU').catch(() => create('CPU'));
     camView.width = 320;
     camView.height = 240;
-    toast('動き検出 ON（V キーでカメラ表示）');
+    toast('表情の認識 ON（V キーでカメラ表示）');
   } catch (err) {
     console.error(err);
-    toast('動き検出を読み込めませんでした（声だけで動作します）', 5000);
+    toast('表情の認識を読み込めませんでした（声だけで動作します）', 5000);
   }
 }
 
-function updateBody(now) {
-  if (!body.landmarker || video.readyState < 2 || video.currentTime === body.lastVideoTime) return;
-  if (now - body.lastRun < CONFIG.poseInterval) return;
-  body.lastRun = now;
-  body.lastVideoTime = video.currentTime;
-  const res = body.landmarker.detectForVideo(video, now);
-  const lm = res.landmarks && res.landmarks[0];
-  body.lm = lm || null;
+// 平常時の顔からどれだけ動いたか（0..1）。基準は、下がるときは速く・上がるときはゆっくり追従させる
+function faceDelta(name, v) {
+  const b = face.base[name] ?? v;
+  face.base[name] = lerp(b, v, v < b ? 0.05 : 0.002);
+  return clamp(((v - face.base[name]) / Math.max(0.15, 1 - face.base[name])) * CONFIG.faceGain, 0, 1);
+}
 
-  if (!lm) {
-    features.bodyDetected = false;
-    features.motion = lerp(features.motion, 0, 0.2);
-    features.spread = lerp(features.spread, 0, 0.2);
-    features.handsUp = lerp(features.handsUp, 0, 0.2);
-    features.handsFace = lerp(features.handsFace, 0, 0.2);
-    body.prev = null;
+function updateFace(now) {
+  if (!face.landmarker || video.readyState < 2 || video.currentTime === face.lastVideoTime) return;
+  if (now - face.lastRun < CONFIG.faceInterval) return;
+  face.lastRun = now;
+  face.lastVideoTime = video.currentTime;
+  const res = face.landmarker.detectForVideo(video, now);
+  const lm = res.faceLandmarks && res.faceLandmarks[0];
+  const cats = res.faceBlendshapes && res.faceBlendshapes[0] && res.faceBlendshapes[0].categories;
+  face.lm = lm || null;
+  const f = features;
+
+  if (!lm || !cats) {
+    f.faceDetected = false;
+    f.motion = lerp(f.motion, 0, 0.2);
+    for (const k in f.expr) f.expr[k] = lerp(f.expr[k], 0, 0.2);
+    face.prev = null;
     return;
   }
-  features.bodyDetected = true;
+  f.faceDetected = true;
 
-  // 肩幅を基準にして、カメラからの距離に依存しない値にする
-  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-  const shoulder = Math.max(0.05, dist(lm[11], lm[12]));
-  const visible = (p) => (p.visibility ?? 1) > 0.5;
+  // ブレンドシェイプ → 平常時からの差分
+  const score = {};
+  for (const c of cats) score[c.categoryName] = c.score;
+  const d = {};
+  for (const [name, keys] of Object.entries(FACE_SHAPES)) {
+    const v = keys.reduce((a, k) => a + (score[k] || 0), 0) / keys.length;
+    d[name] = faceDelta(name, v);
+  }
+  const browUp = Math.max(d.browInnerUp, d.browOuterUp);
 
-  // 動きの速さ（肩幅/秒）
+  // 表情 → 感情のスコア
+  const target = {
+    joy: d.smile * 1.3,
+    surprise: d.eyeWide * 0.8 + browUp * 0.5 * (0.5 + d.eyeWide),
+    anger: (d.browDown * 0.9 + d.sneer * 0.6 + d.press * 0.3) * (1 - d.smile),
+    sad: (d.frown * 0.8 + d.browInnerUp * 0.5 * (1 - d.eyeWide)) * (1 - d.smile),
+    fear: d.eyeWide * browUp * 1.2 + d.stretch * 0.5,
+  };
+  let strongest = 0;
+  for (const k in target) {
+    target[k] = clamp(target[k], 0, 1);
+    strongest = Math.max(strongest, target[k]);
+    f.expr[k] = lerp(f.expr[k], target[k], 0.35);
+  }
+  f.expr.neutral = lerp(f.expr.neutral, clamp(1 - strongest * 2, 0, 1), 0.2); // 真顔
+
+  // 頭の動きの速さ（顔の幅/秒）: うなずき・首振り・身を乗り出す
+  const nose = lm[1];
+  const width = Math.max(0.05, Math.hypot(lm[454].x - lm[234].x, lm[454].y - lm[234].y));
   let raw = 0;
-  if (body.prev) {
-    const dtSec = Math.max(0.016, (now - body.prevTime) / 1000);
-    let d = 0;
-    let n = 0;
-    for (const id of MOTION_POINTS) {
-      if (visible(lm[id]) && visible(body.prev[id])) {
-        d += dist(lm[id], body.prev[id]);
-        n++;
-      }
-    }
-    if (n) raw = clamp(d / n / shoulder / dtSec / 4, 0, 1);
+  if (face.prev) {
+    const dtSec = Math.max(0.016, (now - face.prevTime) / 1000);
+    raw = clamp(Math.hypot(nose.x - face.prev.x, nose.y - face.prev.y) / width / dtSec / 2.5, 0, 1);
   }
   // 大きく動いた瞬間はすぐ反映し、ゆっくり落ち着く
-  features.motion = lerp(features.motion, raw, raw > features.motion ? 0.7 : 0.1);
-
-  const [nose, lw, rw] = [lm[0], lm[15], lm[16]];
-  const wristsVisible = visible(lw) && visible(rw);
-  const spread = wristsVisible ? clamp((dist(lw, rw) / shoulder - 1.5) / 2.5, 0, 1) : 0;
-  // 画像座標は y が下向きなので「手首の y < 鼻の y」が手を挙げた状態
-  const up = ((visible(lw) && lw.y < nose.y ? 1 : 0) + (visible(rw) && rw.y < nose.y ? 1 : 0)) / 2;
-  const face = ((visible(lw) && dist(lw, nose) < shoulder * 0.5 ? 1 : 0) + (visible(rw) && dist(rw, nose) < shoulder * 0.5 ? 1 : 0)) / 2;
-  features.spread = lerp(features.spread, spread, 0.35);
-  features.handsUp = lerp(features.handsUp, up, 0.35);
-  features.handsFace = lerp(features.handsFace, face, 0.35);
-
-  body.prev = lm.map((p) => ({ x: p.x, y: p.y, visibility: p.visibility }));
-  body.prevTime = now;
+  f.motion = lerp(f.motion, raw, raw > f.motion ? 0.7 : 0.1);
+  face.prev = { x: nose.x, y: nose.y };
+  face.prevTime = now;
 }
 
-// 右下のカメラプレビュー（鏡像＋骨格）
+// いちばん強い表情（真顔を含む）
+function currentExpression() {
+  let best = 'neutral';
+  let bestV = 0.25;
+  for (const [k, v] of Object.entries(features.expr)) {
+    if (k !== 'neutral' && v > bestV) {
+      best = k;
+      bestV = v;
+    }
+  }
+  return best;
+}
+
+// 右下のカメラプレビュー（鏡像＋顔の輪郭＋今の表情）
 function drawCamView() {
-  if (camView.hidden || !body.landmarker) return;
+  if (camView.hidden || !face.landmarker) return;
   const w = camView.width;
   const h = camView.height;
   camCtx.save();
@@ -351,25 +391,36 @@ function drawCamView() {
   camCtx.globalAlpha = 0.6;
   camCtx.drawImage(video, 0, 0, w, h);
   camCtx.globalAlpha = 1;
-  const lm = body.lm;
+  const lm = face.lm;
+  const expr = currentExpression();
+  const color = EMOTIONS[expr].color;
   if (lm) {
-    const color = `hsl(${lerp(200, 0, features.motion)}, 100%, 60%)`;
     camCtx.strokeStyle = color;
-    camCtx.fillStyle = color;
     camCtx.lineWidth = 3;
-    for (const [a, b] of SKELETON) {
-      camCtx.beginPath();
-      camCtx.moveTo(lm[a].x * w, lm[a].y * h);
-      camCtx.lineTo(lm[b].x * w, lm[b].y * h);
-      camCtx.stroke();
-    }
-    for (const id of MOTION_POINTS) {
-      camCtx.beginPath();
-      camCtx.arc(lm[id].x * w, lm[id].y * h, 4, 0, Math.PI * 2);
-      camCtx.fill();
-    }
+    camCtx.beginPath();
+    FACE_OVAL.forEach((id, i) => (i ? camCtx.lineTo(lm[id].x * w, lm[id].y * h) : camCtx.moveTo(lm[id].x * w, lm[id].y * h)));
+    camCtx.stroke();
   }
   camCtx.restore();
+  if (lm) {
+    camCtx.font = 'bold 18px sans-serif';
+    camCtx.fillStyle = color;
+    camCtx.fillText(EXPRESSION_LABEL[expr], 10, 24);
+  }
+}
+
+// 表情も会話の雰囲気（背景の色）に少しずつ効かせる。聞いている人の表情も場の空気の一部
+function feedFaceAtmosphere(dt) {
+  if (!features.faceDetected) return;
+  const e = features.expr;
+  const k = (dt / 1000) * CONFIG.faceMoodRate;
+  atmosphere.score.happy += e.joy * k;
+  atmosphere.score.excited += e.surprise * k;
+  atmosphere.score.sad += e.sad * k;
+  atmosphere.score.angry += e.anger * k;
+  atmosphere.score.fear += e.fear * k;
+  // 真顔でしゃべり続けていると、シリアス寄りに
+  if (features.volume > 0.1) atmosphere.score.serious += e.neutral * k * 0.6;
 }
 
 /* =========================================================
@@ -437,19 +488,20 @@ function splitChunks(text) {
   return res;
 }
 
-// 声と体の特徴から推定した感情スコア（キーワードが無くても反応させる）
+// 声と表情から推定した感情スコア（キーワードが無くても反応させる）
 function prosodyScores(f) {
+  const e = f.expr;
   return {
-    // 声が裏返る＋大きく動く → 驚き
-    surprise: f.pitchExcite * f.volume * 1.2 + f.motion * f.pitchExcite * 0.8,
-    // 低めの大声＋激しい動き → 怒り
-    anger: (f.volume > 0.7 && f.pitchExcite < 0.25 ? (f.volume - 0.7) * 3 : 0) + (f.volume > 0.6 ? f.motion * 0.5 : 0),
-    // 声が高く弾む／両手を挙げる → 喜び
-    joy: f.pitchExcite * f.rateNorm * 0.8 + f.handsUp * 0.9,
-    // 小声で早口／手で顔を覆う → 恐怖
-    fear: (f.volume < 0.25 && f.rateNorm > 0.5 ? 0.4 : 0) + f.handsFace * 1.0,
-    // 小声でゆっくり・低い → 悲しみ
-    sad: f.volume > 0.05 && f.volume < 0.3 && f.rateNorm < 0.2 && f.pitchExcite < 0.1 ? 0.3 : 0,
+    // 声が裏返る／目を見開く → 驚き
+    surprise: f.pitchExcite * f.volume * 1.2 + e.surprise * 0.9,
+    // 低めの大声／しかめ面 → 怒り
+    anger: (f.volume > 0.7 && f.pitchExcite < 0.25 ? (f.volume - 0.7) * 3 : 0) + e.anger * 0.9,
+    // 声が高く弾む／笑顔 → 喜び
+    joy: f.pitchExcite * f.rateNorm * 0.8 + e.joy * 1.0,
+    // 小声で早口／こわばった顔 → 恐怖
+    fear: (f.volume < 0.25 && f.rateNorm > 0.5 ? 0.4 : 0) + e.fear * 0.9,
+    // 小声でゆっくり・低い／口角が下がる → 悲しみ
+    sad: (f.volume > 0.05 && f.volume < 0.3 && f.rateNorm < 0.2 && f.pitchExcite < 0.1 ? 0.3 : 0) + e.sad * 0.9,
   };
 }
 
@@ -1929,7 +1981,8 @@ function frame() {
   lastTime = now;
 
   updateAudio();
-  updateBody(now);
+  updateFace(now);
+  feedFaceAtmosphere(dt);
   arrangeDocks(now);
 
   // 話速: 発話中の字幕の文字数 / 経過時間
@@ -1969,10 +2022,8 @@ function updateHud(now) {
     ['ピッチ', features.pitchExcite, `${features.pitch.toFixed(0)}Hz`],
     ['基準ピッチ', null, `${features.pitchBase.toFixed(0)}Hz`],
     ['話速', features.rateNorm, `${features.rate.toFixed(1)}字/s`],
-    ['動き', features.motion, features.bodyDetected ? features.motion.toFixed(2) : '未検出'],
-    ['手の広がり', features.spread, features.spread.toFixed(2)],
-    ['手を挙げる', features.handsUp, features.handsUp.toFixed(2)],
-    ['顔を覆う', features.handsFace, features.handsFace.toFixed(2)],
+    ['頭の動き', features.motion, features.faceDetected ? features.motion.toFixed(2) : '顔なし'],
+    ...Object.entries(features.expr).map(([k, v]) => [EXPRESSION_LABEL[k], v, v.toFixed(2)]),
     ['強さ', features.intensity, features.intensity.toFixed(2)],
   ];
   hud.innerHTML =
@@ -1986,6 +2037,7 @@ function updateHud(now) {
       .join('') +
     `<div class="row"><span class="label">感情</span><span style="color:${EMOTIONS[emo].color}">${EMOTIONS[emo].label}</span></div>` +
     `<div class="row"><span class="label">認識</span><span>${running ? '● 聞き取り中' : '停止'}</span></div>` +
+    `<div class="row"><span class="label">表情</span><span>${features.faceDetected ? EXPRESSION_LABEL[currentExpression()] : '顔なし'}</span></div>` +
     `<div class="row"><span class="label">雰囲気</span><span style="color:${MOODS[atmosphere.mood].colors[0]}">${MOODS[atmosphere.mood].label}</span>` +
     `<span style="opacity:0.6">&nbsp;${Object.entries(atmosphere.score)
       .filter(([, v]) => v > 0.05)
@@ -2024,7 +2076,7 @@ async function start() {
   document.body.classList.add('running');
   requestAnimationFrame(frame);
   // カメラと MediaPipe の読み込みは時間がかかるので、声の字幕を先に動かしておく
-  initBody();
+  initFace();
 }
 
 startBtn.addEventListener('click', start);
@@ -2066,7 +2118,7 @@ window.addEventListener('keydown', (e) => {
       break;
     case 'v':
     case 'V':
-      if (body.landmarker) camView.hidden = !camView.hidden;
+      if (face.landmarker) camView.hidden = !camView.hidden;
       break;
     case 'Enter':
       e.preventDefault();
