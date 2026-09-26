@@ -16,28 +16,20 @@ const CONFIG = {
   lang: 'ja-JP',
   fallbackFont: "'Hiragino Sans', 'Meiryo', sans-serif",
   U: 100, // レイアウト計算の基準フォントサイズ(px)。描画時に画面に合わせて拡大する
-  maxWordRatio: 0.6, // 基準の単語 1 文字の高さの上限（画面の高さ比）
-  captionLife: 8000, // しゃべり終わってからページを表示し続ける時間(ms)
-  exitDur: 380, // ページが閉じるアニメーションの長さ(ms)
-  pageMaxChars: 16, // 1 ページ（吹き出し 1 つ）に入れる最大文字数
-  minFontRatio: 0.14, // 文字がこれより小さくなる（画面の高さ比）なら次のページへ送る（吹き出し・端の帯を除いた画面全体で判定）
-  minPageChars: 8, // この文字数までは、文字の大きさを理由に改ページしない（1 単語ずつの細切れを防ぐ）
+  lineRatio: 0.075, // 字幕の基準の 1 文字の高さ（画面の高さ比）。大事な言葉・大きな声の言葉はこれより大きくなる
+  textBottom: 0.9, // いちばん新しい字幕の下端の位置（画面の高さ比）。古い字幕は上へ押し出されていく
+  fadeTop: 0.22, // 上へ押し出された字幕が、画面の上のこの範囲（高さ比）で薄くなって消える
+  paraMaxChars: 40, // 1 つの吹き出しに入れる最大文字数（文の区切りでも吹き出しを分ける）
+  exitDur: 380, // 字幕が消えるアニメーションの長さ(ms)
   dbFloor: -58, // この音量(dBFS)以下は無音扱い
   dbCeil: -12, // この音量で最大
-  charStagger: 14, // 1 文字ずつ出てくる間隔(ms)
+  charStagger: 35, // 1 文字ずつ出てくる間隔(ms)。タイピングしているように見える
   enterDur: 280, // 単語の登場アニメーションの長さ(ms)
-  bubbleChance: 0.5, // ページに吹き出しを付ける確率
-  columnsChance: 0.3, // ページ全体を縦書きにする確率
-  verticalWordChance: 0.18, // 横書きのページの中で、単語だけ縦にする確率
   pitchMin: 80,
   pitchMax: 600,
   faceInterval: 80, // 表情の認識の間隔(ms)。表情はそこまで速く変わらないので、描画を重くしないよう間引く
   faceGain: 1.6, // 表情の感度（大きいほど、少しの表情の変化でも反応する）
   faceMoodRate: 0.2, // 表情が会話の雰囲気（背景の色）に効く強さ
-  dockTime: 6000, // 前のページを画面の端に残しておく時間(ms)
-  minDock: 1200, // 次のページに押し出されても、最低これだけは端に残す(ms)
-  dockArea: 0.04, // 端に寄せたページの大きさ（画面の面積比）
-  dockHeight: 0.22, // 端に寄せたページの高さの上限（画面の高さ比）
   moodHalfLife: 25000, // 会話の雰囲気（背景の色）が前の話題を引きずる時間の目安(ms)
   summaryHalfLife: 40000, // 中央の要約の絵文字が、前の話題を引きずる時間の目安(ms)
   summaryAlpha: 0.13, // 中央の要約の絵文字の濃さ
@@ -550,18 +542,13 @@ const ENTRANCE_STAGGER = { typewriter: 55, scramble: 45, wipe: 30, drip: 60, jum
 // 文字ごとに動く登場アニメーション
 const CHAR_ENTRANCES = new Set(['jump', 'waveIn', 'drip', 'typewriter', 'wipe', 'scramble', 'glitchIn']);
 const SCRAMBLE_POOL = 'アイウエオカキクケコサシスセソ01#$%&@*?';
-// 吹き出しが閉じるときの動き
-const EXITS = ['pop', 'up', 'fade', 'zoomOut', 'slide'];
 
 /* =========================================================
- * 字幕: 単語（Chunk）とページ（Caption）
- *   1 つの Caption が 1 ページ（吹き出し 1 つ分）。
- *   文の区切りや、文字が小さくなりすぎる所まで来たら、ページを閉じて次のページへ進む
+ * 字幕: 単語（Chunk）と吹き出し（Caption）
+ *   文字起こしのように、1 つの Caption（吹き出し 1 つ）の中で単語が左から右へ打ち込まれ、行を折り返す。
+ *   新しい吹き出しは画面の下に出て、古い吹き出しは上へ押し出されていく。
+ *   文の区切りや、文字数が多くなった所で、次の吹き出しに進む
  * ========================================================= */
-// 縦書きで 90° 回す文字 / 右上に寄せる文字
-const RE_V_ROTATE = /[ー－―—〜～…‥\-=＝→←()（）「」『』【】[\]<>＜＞A-Za-z0-9ａ-ｚＡ-Ｚ０-９]/;
-const RE_V_PUNCT = /[、。，．]/;
-const RE_V_SMALL = /[ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ]/;
 const EMOJI_FONT = `${U}px 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif`;
 const EMOJI_SIZE = 0.95; // 絵文字の幅（基準単位 U 比）
 
@@ -597,9 +584,9 @@ class Chunk {
     this.cap = cap;
     this.index = index;
     const r = mulberry32(cap.seed * 131 + index * 7919);
-    this.roll = { font: r(), pal: r(), style: r(), size: r(), vert: r(), enter: r() };
+    this.roll = { font: r(), pal: r(), style: r(), size: r(), enter: r() };
     this.dir = r() < 0.5 ? -1 : 1;
-    this.tilt = (r() - 0.5) * 0.1;
+    this.tilt = (r() - 0.5) * 0.04; // 文字起こしとして読みやすいよう、傾きはわずかに
     this.phase = r() * Math.PI * 2;
     this.born = now;
     this.vol = cap.volOverride ?? Math.max(features.intensity, features.recentPeak * 0.7);
@@ -651,8 +638,6 @@ class Chunk {
     this.font = fontSpec(this.family);
     this.style = pickBy(cat.styles, this.roll.style);
     this.palIndex = Math.floor(this.roll.pal * cat.palettes.length);
-    this.vertical =
-      this.cap.mode === 'columns' || (text.length >= 2 && text.length <= 6 && this.roll.vert < CONFIG.verticalWordChance);
     const emoji = findEmoji(text);
     if (emoji !== this.emoji) {
       this.emoji = emoji;
@@ -678,18 +663,17 @@ class Chunk {
   measure() {
     if (this.measured) return;
     ctx.font = this.font;
-    for (const c of this.chars) c.w = this.vertical ? U : ctx.measureText(c.ch).width;
+    for (const c of this.chars) c.w = ctx.measureText(c.ch).width;
     this.measured = true;
   }
 
-  // 大きさの重み: 内容のある単語・叫んだ単語ほど大きい
+  // 大きさの重み: 内容のある単語・叫んだ単語ほど大きい（文字起こしとして読める範囲に収める）
   weight() {
-    let s = 0.85 + this.roll.size * 0.3;
+    let s = 0.9 + this.roll.size * 0.15;
     if (this.category !== 'neutral') s *= 1.25;
-    if (/[!！]/.test(this.text)) s *= 1.15;
-    if (RE_INTENSIFIER.test(this.text)) s *= 1.3;
-    if (this.text.length <= 2) s *= 1.1;
-    return s * (0.75 + this.vol * 0.7);
+    if (/[!！]/.test(this.text)) s *= 1.1;
+    if (RE_INTENSIFIER.test(this.text)) s *= 1.25;
+    return clamp(s * (0.8 + this.vol * 0.6), 0.8, 1.9);
   }
 
   // 基準単位での大きさと、文字・絵文字ごとの位置（絵文字は単語の後ろに置く）
@@ -697,18 +681,6 @@ class Chunk {
     this.measure();
     const extra = this.emoji ? U * EMOJI_SIZE : 0;
     let off = 0;
-    if (this.vertical) {
-      const step = U * 1.02;
-      const h = this.chars.length * step + extra;
-      for (const c of this.chars) {
-        c.ox = 0;
-        c.oy = -h / 2 + off + step / 2;
-        off += step;
-      }
-      this.ex = 0;
-      this.ey = h / 2 - extra / 2;
-      return { w: U * 1.15, h };
-    }
     const total = this.chars.reduce((a, c) => a + c.w, 0) + extra;
     for (const c of this.chars) {
       c.ox = -total / 2 + off + c.w / 2;
@@ -724,24 +696,12 @@ class Chunk {
 class Caption {
   constructor(now) {
     this.seed = Math.floor(Math.random() * 1e9);
-    const r = mulberry32(this.seed);
-    this.mode = r() < CONFIG.columnsChance ? 'columns' : 'rows';
-    this.zigzag = r() < 0.5; // 行（列）ごとに左右（上下）に寄せる
-    this.bubble = r() < CONFIG.bubbleChance;
-    this.tailDir = r() < 0.5 ? -1 : 1;
-    this.offRoll = [r() * 2 - 1, r() * 2 - 1];
-    this.tilt = this.mode === 'rows' ? (r() - 0.5) * 0.05 : 0;
-    this.exit = pickBy(EXITS, r());
-    this.dockedAt = 0;
-    this.dockX = 0;
-    this.dockY = 0;
-    this.dockS = 0;
     this.born = now;
     this.text = '';
     this.chunks = [];
     this.live = true;
     this.committedAt = 0;
-    this.state = 'main'; // main → docked（画面の端に小さく残る）→ leaving（閉じるアニメーション）→ 消える
+    this.state = 'main'; // main（表示中）→ leaving（消えるアニメーション）→ 消える
     this.leftAt = 0;
     this.peak = features.recentPeak;
     this.finalI = 0;
@@ -751,11 +711,14 @@ class Caption {
     this.emotion = 'neutral';
     this.strength = 0;
     this.scale = 0; // 基準単位 → 画面 px の倍率
-    this.cx = W / 2;
+    this.bw = 0; // 文字の範囲の大きさ（基準単位）
+    this.bh = 0;
+    this.left = 0; // 文字の範囲の左上（画面 px）
+    this.top = null;
+    this.targetTop = 0;
+    this.outerH = 0; // 吹き出しを含めた高さ（画面 px）
+    this.cx = W / 2; // 吹き出しの中心（画面 px。パーティクルの発生位置に使う）
     this.cy = H / 2;
-    this.bw = U;
-    this.bh = U;
-    this.limitIdx = -1;
     this.alpha = 1;
     this.dead = false;
   }
@@ -766,7 +729,10 @@ class Caption {
     for (let i = 0; i < parts.length; i++) {
       if (this.chunks[i]) this.chunks[i].setText(parts[i], now);
       else {
-        this.chunks.push(new Chunk(this, i, parts[i], now));
+        // 前の単語を打ち終わってから次の単語を打ち始める（タイピングのように 1 文字ずつ）
+        const prev = this.chunks[i - 1];
+        const after = prev ? Math.max(now, prev.chars[prev.chars.length - 1].born + prev.stagger) : now;
+        this.chunks.push(new Chunk(this, i, parts[i], after));
         if (this.chunks.length > 1) onNewChunk();
       }
     }
@@ -797,18 +763,9 @@ class Caption {
     this.emotion = emo.type;
     this.strength = emo.strength;
     if (this.finalI > 0.65 || this.strength > 0.6) impact(this);
-    // 確定したページのキーワードの絵文字を、背景の「話題」に加え、会話の雰囲気にも反映する
+    // 確定した吹き出しのキーワードの絵文字を、背景の「話題」に加え、会話の雰囲気にも反映する
     for (const k of this.chunks) if (k.emoji) addTopic(k.emoji, now);
     feedAtmosphere(this);
-  }
-
-  // 次のページが出るとき、今のページは画面の端に小さく寄せて残す
-  dock(now) {
-    if (this.state !== 'main') return;
-    // 改ページで単語が減った直後でも正しい大きさで寄せられるよう、最後にもう一度組み直す
-    this.layout();
-    this.state = 'docked';
-    this.dockedAt = now;
   }
 
   leave(now) {
@@ -817,22 +774,18 @@ class Caption {
     this.leftAt = now;
   }
 
-  // このページに収まらなくなったら、先頭から何単語をこのページに残すかを返す（0 なら収まっている）
+  // この吹き出しに収まらなくなったら、先頭から何単語をこの吹き出しに残すかを返す（0 なら収まっている）
   breakPoint() {
     const n = this.chunks.length;
     if (n < 2) return 0;
-    // 文の区切り（。！？）が途中にあれば、そこでページを閉じる
+    // 文の区切り（。！？）が途中にあれば、そこで吹き出しを分ける
     for (let i = 0; i < n - 1; i++) if (RE_SENT_END.test(this.chunks[i].text)) return i + 1;
-    // 吹き出しの余白や端の帯で狭くなった面積で判定すると、ほぼ 1 単語ずつに細切れになるので、画面全体で判定する
-    const fits = (m) => {
-      const sub = this.chunks.slice(0, m);
-      const chars = sub.reduce((a, k) => a + k.text.length, 0);
-      if (chars > CONFIG.pageMaxChars) return false;
-      return chars <= CONFIG.minPageChars || this.bestFlow(sub, true).fit * U >= H * CONFIG.minFontRatio;
-    };
-    if (fits(n)) return 0;
-    for (let m = n - 1; m >= 1; m--) if (fits(m)) return m;
-    return 1;
+    let chars = 0;
+    for (let i = 0; i < n; i++) {
+      chars += this.chunks[i].text.length;
+      if (chars > CONFIG.paraMaxChars) return Math.max(1, i);
+    }
+    return 0;
   }
 
   update(now) {
@@ -849,20 +802,16 @@ class Caption {
       // 今しゃべっている単語は、声の大きさに合わせて育つ
       const last = this.chunks[this.chunks.length - 1];
       if (last && this.volOverride === null) last.vol = Math.max(last.vol, features.intensity);
-    } else if (this.state === 'main' && now - this.committedAt > CONFIG.captionLife) {
-      this.dock(now);
     }
+    if (this.state === 'leaving' && now - this.leftAt > CONFIG.exitDur) this.dead = true;
 
-    if (this.state === 'main') this.layout();
-    else if (this.state === 'docked') {
-      // 画面の端へ滑らかに移動して小さくなる
-      this.cx = lerp(this.cx, this.dockX, 0.14);
-      this.cy = lerp(this.cy, this.dockY, 0.14);
-      this.scale = lerp(this.scale, this.dockS, 0.14);
-      if (now - this.dockedAt > CONFIG.dockTime) this.leave(now);
-    } else if (now - this.leftAt > CONFIG.exitDur) this.dead = true;
+    this.layout();
+    // 上へ押し出される動きは滑らかに
+    this.top = this.top === null ? this.targetTop : lerp(this.top, this.targetTop, 0.16);
+    this.cx = this.left + (this.bw / 2) * this.scale;
+    this.cy = this.top + this.outerH / 2;
 
-    // 単語を目標位置へ滑らかに動かす（行の組み替えもアニメーションになる）
+    // 単語を目標位置へ滑らかに動かす（行の折り返しもアニメーションになる）
     for (const k of this.chunks) {
       if (k.tx === undefined) continue;
       if (k.x === null) {
@@ -876,200 +825,123 @@ class Caption {
     }
   }
 
-  // 使える領域（端に寄せたページがあるときは、上の帯を空けておく）
-  avail(full = false) {
-    if (full) return { w: W * 0.95, h: H * 0.92, pad: 0 };
-    return {
-      w: W * (this.bubble ? 0.8 : 0.95),
-      h: H * (this.bubble ? 0.74 : 0.86) - dockReserve,
-      pad: this.bubble ? U * 0.35 : 0,
-    };
+  // 吹き出しの横・縦の半径（基準単位）。角まで文字を覆うよう、文字の範囲より少し大きく
+  bubbleSize() {
+    return { a: (this.bw / 2) * BUBBLE_COVER + BUBBLE_PAD, b: (this.bh / 2) * BUBBLE_COVER + BUBBLE_PAD };
   }
 
-  // 単語を行（縦書きなら列）に詰める組み方を何通りか試し、いちばん大きく表示できるものを返す
-  bestFlow(chunks, full = false) {
-    const items = chunks.map((k) => {
-      const b = k.box();
-      const s = k.weight();
-      return { k, s, w: b.w * s, h: b.h * s };
-    });
-    const cols = this.mode === 'columns';
-    const gap = U * 0.14;
-    const main = (it) => (cols ? it.h : it.w);
-    const total = items.reduce((a, it) => a + main(it) + gap, 0);
-    const biggest = Math.max(...items.map(main));
-    const A = this.avail(full);
-    const fitOf = (f) => Math.min(A.w / (f.bw + A.pad * 2), A.h / (f.bh + A.pad * 2));
-    const N = 10;
-    const flows = [];
-    let idx = 0;
-    let fit = -1;
-    for (let i = 0; i < N; i++) {
-      const f = this.flow(items, lerp(biggest, total, i / (N - 1)) + 1, gap, cols);
-      f.fit = fitOf(f);
-      flows.push(f);
-      if (f.fit > fit) {
-        fit = f.fit;
-        idx = i;
-      }
-    }
-    return { flows, idx, fit };
-  }
-
+  // 単語を左から右へ並べ、画面の幅で行を折り返す（文字起こしのように左揃え）
   layout() {
     if (!this.chunks.length) return;
-    const { flows, idx, fit } = this.bestFlow(this.chunks);
-    let bestIdx = idx;
-    // 文字が増えるたびに組み方がコロコロ変わらないよう、前回の組み方がほぼ同じ大きさなら維持
-    if (this.limitIdx >= 0 && flows[this.limitIdx].fit > fit * 0.9) bestIdx = this.limitIdx;
-    this.limitIdx = bestIdx;
-    const f = flows[bestIdx];
-    for (const pl of f.places) {
-      pl.k.tx = pl.x;
-      pl.k.ty = pl.y;
-      pl.k.ts = pl.s;
-    }
-    this.bw = f.bw;
-    this.bh = f.bh;
-
-    // 声の大きさで画面の埋まり具合を変える（小声でも 9 割は埋める）
-    const I = this.live ? features.intensity : this.finalI;
-    const target = Math.min(f.fit * lerp(0.9, 1, I), (H * CONFIG.maxWordRatio) / U);
-    this.scale = this.scale ? lerp(this.scale, target, 0.25) : target;
-
-    // 余白があれば、ページごとに中心位置をずらして単調にしない
-    const A = this.avail();
-    const spareX = Math.max(0, (A.w - (f.bw + A.pad * 2) * this.scale) / 2);
-    const spareY = Math.max(0, (A.h - (f.bh + A.pad * 2) * this.scale) / 2);
-    this.cx = lerp(this.cx, W / 2 + this.offRoll[0] * spareX, 0.2);
-    this.cy = lerp(this.cy, H / 2 + dockReserve / 2 + this.offRoll[1] * spareY, 0.2);
-  }
-
-  flow(items, limit, gap, cols) {
-    // 横書き: 行を上から / 縦書き: 列を右から
+    this.scale = (H * CONFIG.lineRatio) / U;
+    // 吹き出しの幅が画面の 94% に収まる、文字の範囲の最大幅
+    const limit = ((W * 0.94) / this.scale - BUBBLE_PAD * 2) / BUBBLE_COVER;
+    const gap = U * 0.12;
     const lines = [];
-    let line = { items: [], len: 0, cross: 0 };
-    for (const it of items) {
-      const len = cols ? it.h : it.w;
-      const cross = cols ? it.w : it.h;
-      if (line.items.length && line.len + gap + len > limit) {
+    let line = { items: [], len: 0, h: 0 };
+    for (const k of this.chunks) {
+      const b = k.box();
+      const s = k.weight();
+      const it = { k, s, w: b.w * s, h: b.h * s };
+      if (line.items.length && line.len + gap + it.w > limit) {
         lines.push(line);
-        line = { items: [], len: 0, cross: 0 };
+        line = { items: [], len: 0, h: 0 };
       }
-      line.len += (line.items.length ? gap : 0) + len;
-      line.cross = Math.max(line.cross, cross);
+      line.len += (line.items.length ? gap : 0) + it.w;
+      line.h = Math.max(line.h, it.h);
       line.items.push(it);
     }
     lines.push(line);
-    const mainLen = Math.max(...lines.map((l) => l.len));
-    const crossLen = lines.reduce((a, l) => a + l.cross, 0) + gap * 0.5 * (lines.length - 1);
-
-    const places = [];
-    let crossPos = -crossLen / 2;
-    lines.forEach((l, li) => {
-      // zigzag: 行ごとに左寄せ・右寄せを交互に（歌詞動画っぽいリズム）
-      let start = -l.len / 2;
-      if (this.zigzag && lines.length > 1) start = li % 2 === 0 ? -mainLen / 2 : mainLen / 2 - l.len;
-      let pos = start;
+    // 単語の下端を行ごとに揃える（大きい単語は上に伸びる）
+    let y = 0;
+    for (const l of lines) {
+      let x = 0;
       for (const it of l.items) {
-        const len = cols ? it.h : it.w;
-        const c = crossPos + l.cross / 2;
-        const m = pos + len / 2;
-        // 縦書きは右の列から
-        places.push({ k: it.k, x: cols ? -c : m, y: cols ? m : c, s: it.s });
-        pos += len + gap;
+        it.k.tx = x + it.w / 2;
+        it.k.ty = y + l.h - it.h / 2;
+        it.k.ts = it.s;
+        it.k.w = it.w / it.s;
+        x += it.w + gap;
       }
-      crossPos += l.cross + gap * 0.5;
-    });
-    return cols ? { bw: crossLen, bh: mainLen, places } : { bw: mainLen, bh: crossLen, places };
+      y += l.h + gap * 0.6;
+    }
+    this.bw = Math.max(...lines.map((l) => l.len));
+    this.bh = y - gap * 0.6;
+    const { a, b } = this.bubbleSize();
+    // 文字の左端は固定（吹き出しが横に伸びても、文字は動かない）
+    this.left = W * 0.03 + (limit * (BUBBLE_COVER - 1) * 0.5 + BUBBLE_PAD) * this.scale;
+    // 吹き出しのトゲ・しっぽの分も含めた高さ
+    this.outerH = (b * 2 + U * 0.9) * this.scale;
+    this.textTop = (b - this.bh / 2 + U * 0.25) * this.scale; // 吹き出しの上端から文字の上端まで(px)
+    this.bubbleA = a;
+    this.bubbleB = b;
   }
 }
 
+const BUBBLE_COVER = 1.12; // 吹き出しの輪郭が、文字の範囲の四隅まで覆うための倍率
+const BUBBLE_PAD = U * 0.3; // 吹き出しの内側の余白（基準単位）
+
 /* =========================================================
- * 字幕の管理（発話 → ページ送り）
+ * 字幕の管理（発話 → 吹き出し → 上へ流れる）
  * ========================================================= */
 const captions = [];
-let liveCaption = null; // 今しゃべっている内容を出しているページ
-const utter = { start: 0, text: '' }; // 発話全体のテキストと、今のページが始まる文字位置
+let liveCaption = null; // 今しゃべっている内容を出している吹き出し
+const utter = { start: 0, text: '' }; // 発話全体のテキストと、今の吹き出しが始まる文字位置
 let pendingVol = null; // 手入力のときの強さ
 const particles = [];
 const fx = { shake: 0, flashColor: '#000', flash: 0 };
 const cam = { punch: 0, rot: 0 };
 
-let dockReserve = 0; // 端に寄せたページのために空けておく上の帯の高さ(px)
-
-// 端に寄せる側（-1: 左, 1: 右）。ページごとに左右交互にする
-let dockFlip = 1;
-function pageSide(c) {
-  if (!c.side) c.side = dockFlip = -dockFlip;
-  return c.side;
-}
-
-// 端に寄せたページの置き場所: 画面上部の左右の角に 1 枚ずつ。
-// 同じ側に新しいページが来たら古い方は閉じる（端に来てから minDock たっていれば。2 枚を超える分はすぐ閉じる）
-function arrangeDocks(now) {
-  const docked = captions.filter((c) => c.state === 'docked').sort((a, b) => b.dockedAt - a.dockedAt);
-  const count = { '-1': 0, 1: 0 };
-  const m = 16;
-  const cursor = { '-1': m + H * 0.03, 1: m + H * 0.03 };
-  let bottom = 0;
-  for (const c of docked) {
-    const side = pageSide(c);
-    const slot = count[side]++;
-    if (slot >= 2 || (slot >= 1 && now - c.dockedAt > CONFIG.minDock)) {
-      c.leave(now);
-      continue;
-    }
-    const A = c.avail();
-    const bw = c.bw + A.pad * 2;
-    const bh = c.bh + A.pad * 2;
-    // 面積で大きさを揃える（縦書きのページが極端に小さくならないように）
-    // 文字が大きくなりすぎないよう、1 文字の高さも画面の 8% までに抑える
-    c.dockS = Math.min(Math.sqrt((W * H * CONFIG.dockArea) / (bw * bh)), (H * CONFIG.dockHeight) / bh, (W * 0.4) / bw, (H * 0.08) / U);
-    const w = bw * c.dockS;
-    const h = bh * c.dockS;
-    c.dockX = side < 0 ? m + w / 2 : W - m - w / 2;
-    c.dockY = cursor[side] + h / 2;
-    cursor[side] += h + 8;
-    if (slot === 0) bottom = Math.max(bottom, c.dockY + h / 2 + 8);
+// 新しい吹き出しを画面の下に置き、古い吹き出しを上へ積み上げる。画面の上に出たものは消す
+function arrangeTranscript(now) {
+  let bottom = H * CONFIG.textBottom;
+  for (let i = captions.length - 1; i >= 0; i--) {
+    const c = captions[i];
+    if (!c.chunks.length) continue;
+    c.targetTop = bottom - c.outerH;
+    bottom = c.targetTop - H * 0.01;
+    if (c.top !== null && c.top + c.outerH < 0) c.dead = true;
   }
-  dockReserve = lerp(dockReserve, bottom, 0.1);
+  // 画面の上の方に来た吹き出しは薄くなる
+  for (const c of captions) {
+    if (c.top === null) continue;
+    const q = clamp((c.top + c.outerH * 0.6) / (H * CONFIG.fadeTop), 0, 1);
+    c.fade = q;
+  }
 }
 
 function newCaption(now) {
-  for (const c of captions) c.dock(now);
   const c = new Caption(now);
   c.volOverride = pendingVol;
   captions.push(c);
-  cam.punch += 0.03;
   return c;
 }
 
 // 単語が増えるたびに画面が少し寄る
 function onNewChunk() {
   const I = features.intensity;
-  cam.punch += 0.01 + I * 0.03;
-  if (I > 0.7) fx.shake = Math.max(fx.shake, I * 6);
+  cam.punch += 0.004 + I * 0.01;
+  if (I > 0.7) fx.shake = Math.max(fx.shake, I * 4);
 }
 
 // 大きな声・強い感情で確定したときの演出（控えめに）
 function impact(c) {
   const emo = EMOTIONS[c.emotion];
-  fx.shake = Math.max(fx.shake, 4 + c.finalI * 10);
-  fx.flash = Math.max(fx.flash, 0.06 + 0.12 * c.finalI);
+  fx.shake = Math.max(fx.shake, 3 + c.finalI * 6);
+  fx.flash = Math.max(fx.flash, 0.05 + 0.1 * c.finalI);
   fx.flashColor = emo.glow;
-  cam.punch += 0.03 + 0.04 * c.finalI;
+  cam.punch += 0.01 + 0.01 * c.finalI;
   if (c.finalI > 0.6) burstParticles(c.cx, c.cy, 24, c.emotion);
 }
 
 function burstParticles(x, y, n, emotion) {
   const colors = {
-    joy: ['#ffd23f', '#ff4d8d', '#3fe0ff', '#7dff6a', '#ffffff'],
-    surprise: ['#ffffff', '#3fe0ff', '#fff176'],
+    joy: ['#ffd23f', '#ff4d8d', '#3fe0ff', '#7dff6a', '#ff9d00'],
+    surprise: ['#00a2ff', '#3fe0ff', '#ffb300'],
     fear: ['#8a2be2', '#ff0044'],
-    anger: ['#ff2020', '#ffb000', '#ffffff'],
-    sad: ['#8fc4ff', '#d8ecff'],
-    neutral: ['#ffffff', '#ffd23f', '#3fe0ff', '#ff4d8d'],
+    anger: ['#ff2020', '#ffb000', '#b3001b'],
+    sad: ['#3d7bff', '#8fc4ff'],
+    neutral: ['#6f8cff', '#ffd23f', '#3fe0ff', '#ff4d8d'],
   }[emotion];
   for (let i = 0; i < n && particles.length < 200; i++) {
     const a = rand(0, Math.PI * 2);
@@ -1090,7 +962,7 @@ function burstParticles(x, y, n, emotion) {
   }
 }
 
-// 今のページに収まらなくなったら、ページを閉じて続きを次のページへ送る
+// 今の吹き出しに収まらなくなったら、吹き出しを確定して続きを次の吹き出しへ送る
 function paginate(text, now) {
   for (let guard = 0; guard < 10; guard++) {
     const keep = liveCaption.breakPoint();
@@ -1234,15 +1106,16 @@ function startRecognition() {
 }
 
 /* =========================================================
- * 描画: 背景（控えめ。主役は字幕）
+ * 描画: 背景（白がベース。話の内容・表情・声で色が変わる）
  * ========================================================= */
-const bgState = { blobs: [hexToRgb('#16324f'), hexToRgb('#2b2d6e'), hexToRgb('#0f3b3a')], speed: 0 };
+const bgState = { base: [255, 255, 255], blobs: [hexToRgb('#7cc4ff'), hexToRgb('#8fe3c8'), hexToRgb('#b9a8ff')], speed: 0 };
 let speedLines = [];
 let speedLinesAt = 0;
 
+// 今の感情: しゃべっている最中の吹き出し、なければ最後の吹き出し
 function currentEmotion() {
-  const main = captions.find((c) => c.state === 'main');
-  return main ? main.emotion : 'neutral';
+  const c = liveCaption || captions[captions.length - 1];
+  return c ? c.emotion : 'neutral';
 }
 
 /* =========================================================
@@ -1315,14 +1188,15 @@ function drawTopics(now, dt) {
  *   確定したページの単語のムードと、声から推定した感情を積み上げ、時間とともに薄れさせる。
  *   いちばん強い雰囲気の 3 色で背景を染める
  * ========================================================= */
+// 白い下地に薄く重ねる色（そのまま重ねるとパステル調になる）
 const MOODS = {
-  calm: { label: '平常', colors: ['#16324f', '#2b2d6e', '#0f3b3a'] },
+  calm: { label: '平常', colors: ['#7cc4ff', '#8fe3c8', '#b9a8ff'] },
   happy: { label: '楽しい', colors: ['#ff9f1c', '#ff4f8b', '#ffd23f'] },
   excited: { label: 'ワクワク', colors: ['#00b4ff', '#ffe600', '#ff3cac'] },
-  sad: { label: '悲しい', colors: ['#1e3c72', '#3a6bd6', '#5b4b8a'] },
-  serious: { label: 'シリアス', colors: ['#2c3e50', '#4a2c6e', '#1b4d3e'] },
-  fear: { label: '怖い', colors: ['#4b0026', '#2a0845', '#0b3d2e'] },
-  angry: { label: '怒り', colors: ['#b3001b', '#ff5a00', '#4a0000'] },
+  sad: { label: '悲しい', colors: ['#3a6bd6', '#6f9bea', '#7b6bc0'] },
+  serious: { label: 'シリアス', colors: ['#56657d', '#6d5a93', '#3f7d6a'] },
+  fear: { label: '怖い', colors: ['#6a1b9a', '#3a1f6e', '#1f6b5a'] },
+  angry: { label: '怒り', colors: ['#ff2a2a', '#ff7a00', '#c4001f'] },
 };
 // 単語のムード / 発話の感情 → 雰囲気
 const WORD_MOOD_ATM = { happy: 'happy', surprise: 'excited', sad: 'sad', cool: 'serious', fear: 'fear', angry: 'angry' };
@@ -1394,7 +1268,7 @@ function drawSummary(now) {
     const size = H * 0.62 * s * (1 + Math.sin(now / 2400) * 0.025);
     ctx.save();
     ctx.globalAlpha = CONFIG.summaryAlpha * a;
-    ctx.translate(W / 2, H / 2 + dockReserve / 2);
+    ctx.translate(W / 2, H * 0.45);
     ctx.rotate(Math.sin(now / 6000) * 0.05);
     ctx.scale(size / U, size / U);
     drawEmoji(emoji);
@@ -1408,21 +1282,34 @@ function drawBackground(now, emotion, I, dt) {
   updateAtmosphere(dt);
   updateSummary(now, dt);
 
-  // 暗い下地に、会話の雰囲気の 3 色をゆっくり動く光としてにじませる
-  ctx.fillStyle = '#0a0a12';
-  ctx.fillRect(0, 0, W, H);
+  // 白い下地を、4 つの手がかりで染める
+  //   話の内容（＋表情の積み重ね）→ 会話の雰囲気の 3 色 / 今の表情 → 1 色目を表情の色に寄せる
+  //   声の大きさ → 色の濃さと広がり / 声の高さ → 色のかたまりが上へ昇る（低い声は下に沈む）
+  const vol = features.volume;
   const pal = MOODS[atmosphere.mood].colors;
-  const R = Math.max(W, H) * 0.75;
+  const expr = features.faceDetected ? currentExpression() : 'neutral';
+  const exprK = expr === 'neutral' ? 0 : clamp(features.expr[expr] * 1.2, 0, 0.8);
+  const base = bgState.base;
+  const baseTarget = hexToRgb(pal[0]).map((v) => lerp(255, v, 0.08 + vol * 0.1));
+  for (let j = 0; j < 3; j++) base[j] = lerp(base[j], baseTarget[j], 0.03);
+  ctx.fillStyle = `rgb(${base[0] | 0},${base[1] | 0},${base[2] | 0})`;
+  ctx.fillRect(0, 0, W, H);
+  const R = Math.max(W, H) * (0.5 + vol * 0.3);
+  const rise = (features.pitchExcite - 0.3) * H * 0.35;
   for (let i = 0; i < 3; i++) {
-    const target = hexToRgb(pal[i]);
+    let target = hexToRgb(pal[i]);
+    if (i === 0 && exprK > 0) {
+      const e = hexToRgb(EMOTIONS[expr].glow);
+      target = target.map((v, j) => lerp(v, e[j], exprK));
+    }
     const c = bgState.blobs[i];
-    for (let j = 0; j < 3; j++) c[j] = lerp(c[j], target[j], 0.012);
+    for (let j = 0; j < 3; j++) c[j] = lerp(c[j], target[j], 0.02);
     const x = W * (0.5 + 0.38 * Math.sin(now / (13000 + i * 3700) + i * 2.1));
-    const y = H * (0.5 + 0.34 * Math.cos(now / (11000 + i * 2900) + i * 1.3));
+    const y = H * (0.5 + 0.3 * Math.cos(now / (11000 + i * 2900) + i * 1.3)) - rise;
     const g = ctx.createRadialGradient(x, y, 0, x, y, R);
     g.addColorStop(0, `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`);
-    g.addColorStop(1, 'transparent');
-    ctx.globalAlpha = 0.4 + features.volume * 0.08; // 声に合わせてわずかに明るくなる
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.globalAlpha = 0.22 + vol * 0.3;
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
   }
@@ -1444,8 +1331,8 @@ function drawBackground(now, emotion, I, dt) {
     }
     const R = Math.hypot(W, H);
     const m = Math.min(W, H);
-    ctx.fillStyle = '#ffffff';
-    ctx.globalAlpha = bgState.speed * 0.16;
+    ctx.fillStyle = '#111111'; // 白い背景なので、漫画の集中線のように黒で
+    ctx.globalAlpha = bgState.speed * 0.1;
     ctx.beginPath();
     for (const l of speedLines) {
       const r0 = l.r * m;
@@ -1474,17 +1361,20 @@ function drawBackground(now, emotion, I, dt) {
 function bubblePath(shape, a, b, now, seed) {
   const r = mulberry32(seed);
   const t = now / 1000;
-  const N = 160;
-  const spikes = shape === 'burst' ? 30 : 15;
+  // 大きな吹き出しほどトゲ・もこもこの数を増やす（1 つ 1 つの大きさを揃える）
+  const size = (a + b) / U;
+  const spikes = Math.round(clamp(size * (shape === 'burst' ? 5 : 2.5), 14, 90));
+  const N = Math.max(160, spikes * 6);
   const amps = Array.from({ length: spikes }, () => r());
+  const m = Math.min(a, b, U * 1.5);
   ctx.beginPath();
   for (let i = 0; i <= N; i++) {
     const th = (i / N) * Math.PI * 2;
     const c = Math.cos(th);
     const s = Math.sin(th);
-    // 角丸の四角っぽい楕円（文字の四隅を覆いやすい）
-    let x = a * Math.sign(c) * Math.sqrt(Math.abs(c));
-    let y = b * Math.sign(s) * Math.sqrt(Math.abs(s));
+    // 角丸の四角に近い楕円（横長の文章の四隅も覆える）
+    let x = a * Math.sign(c) * Math.pow(Math.abs(c), 0.3);
+    let y = b * Math.sign(s) * Math.pow(Math.abs(s), 0.3);
     let f = 1;
     switch (shape) {
       case 'burst': {
@@ -1503,19 +1393,21 @@ function bubblePath(shape, a, b, now, seed) {
       }
       case 'cloud':
         // 喜び: もこもこ
-        f = 1 + 0.06 * Math.abs(Math.sin(th * 8 + t * 0.6));
+        f = 1 + 0.12 * Math.abs(Math.sin((th * spikes) / 2 + t * 0.6));
         break;
       case 'wavy':
         // 恐怖: 不気味に波打つ
-        f = 1 + 0.035 * Math.sin(th * 9 + t * 3) + 0.02 * Math.sin(th * 17 - t * 5);
+        f = 1 + 0.08 * Math.sin((th * spikes) / 2 + t * 3) + 0.04 * Math.sin(th * spikes - t * 5);
         break;
       case 'drip':
         // 悲しみ: ゆっくりたゆたう
-        f = 1 + 0.025 * Math.sin(th * 5 + t);
+        f = 1 + 0.06 * Math.sin((th * spikes) / 3 + t);
         break;
     }
-    x *= f;
-    y *= f;
+    // トゲや波は、吹き出しの大きさに比例させず、短い辺を基準にした一定の長さで外へ出す（横長でもはみ出さない）
+    const d = (f - 1) * m * 2;
+    x += d * c;
+    y += d * s;
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   }
@@ -1525,33 +1417,33 @@ function bubblePath(shape, a, b, now, seed) {
 function drawBubble(c, now) {
   const e = EMOTIONS[c.emotion];
   const shape = e.bubble;
-  const pad = U * 0.35;
   const age = (now - c.born) / 300;
   const pop = age < 1 ? easeOutBack(clamp(age, 0, 1), 2.2) : 1;
-  const breathe = 1 + (c.live ? features.volume * 0.04 : 0);
-  const a = ((c.bw / 2) * 1.2 + pad) * pop * breathe;
-  const b = ((c.bh / 2) * 1.2 + pad) * pop * breathe;
+  const breathe = 1 + (c.live ? features.volume * 0.015 : 0);
+  const a = c.bubbleA * pop * breathe;
+  const b = c.bubbleB * pop * breathe;
   if (a <= 0 || b <= 0) return;
-  const lw = Math.max(5, H * 0.009) / c.scale;
+  const lw = Math.max(4, H * 0.006) / c.scale;
 
   ctx.save();
   ctx.lineJoin = 'round';
   ctx.lineWidth = lw;
   ctx.strokeStyle = e.line;
   ctx.fillStyle = e.fill;
-  // しっぽ（普通・喜び・悲しみの吹き出しだけ）
+  // しっぽ（普通・喜び・悲しみの吹き出しだけ）。左下から出す
   const tail = shape === 'speech' || shape === 'cloud' || shape === 'drip';
+  const x0 = -a + Math.min(a, U * 1.2);
   const tailPath = () => {
     ctx.beginPath();
-    ctx.moveTo(c.tailDir * a * 0.25, b * 0.8);
-    ctx.lineTo(c.tailDir * a * 0.62, b * 1.3);
-    ctx.lineTo(c.tailDir * a * 0.5, b * 0.7);
+    ctx.moveTo(x0, b - U * 0.3);
+    ctx.lineTo(x0 - U * 0.45, b + U * 0.55);
+    ctx.lineTo(x0 + U * 0.6, b - U * 0.3);
     ctx.closePath();
   };
   // 影
   ctx.save();
   ctx.translate(lw * 1.4, lw * 1.4);
-  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillStyle = 'rgba(0,0,0,0.15)';
   bubblePath(shape, a, b, now, c.seed);
   ctx.fill();
   ctx.restore();
@@ -1592,7 +1484,7 @@ function glyph(k, ch, simple) {
     k.grad.addColorStop(1, c2);
   }
   // 影
-  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
   ctx.lineWidth = 32;
   ctx.strokeText(ch, 6, 8);
 
@@ -1662,7 +1554,7 @@ function glyph(k, ch, simple) {
 }
 
 // 単語全体の登場アニメーション（p: 0→1）
-function chunkEntrance(k, p, toUnit) {
+function chunkEntrance(k, p) {
   const o = { x: 0, y: 0, r: 0, s: 1, sx: 1, sy: 1, a: 1 };
   if (p >= 1) return o;
   const q = 1 - p;
@@ -1677,12 +1569,12 @@ function chunkEntrance(k, p, toUnit) {
       o.y = jitter(U * 0.15 * q);
       break;
     case 'crash': // 横から突っ込んでくる
-      o.x = k.dir * (1 - easeOutBack(p, 1.4)) * W * 0.7 * toUnit;
+      o.x = k.dir * (1 - easeOutBack(p, 1.4)) * U * 4;
       o.r = k.dir * q * 0.6;
       break;
     case 'bounce': // 上から落ちて弾む
     case 'drop':
-      o.y = -(1 - easeOutBounce(p)) * H * 0.7 * toUnit;
+      o.y = -(1 - easeOutBounce(p)) * U * 3;
       break;
     case 'pop':
       o.s = easeOutBack(p, 4);
@@ -1715,7 +1607,7 @@ function chunkEntrance(k, p, toUnit) {
       break;
     case 'slideL':
     case 'slideR': // 横から滑り込む
-      o.x = (k.entrance === 'slideL' ? -1 : 1) * (1 - easeOutExpo(p)) * W * 0.5 * toUnit;
+      o.x = (k.entrance === 'slideL' ? -1 : 1) * (1 - easeOutExpo(p)) * U * 3;
       o.a = p;
       break;
     case 'fadeUp': // 下からふわっと
@@ -1825,11 +1717,10 @@ function drawChunk(c, k, now, I) {
   if (k.x === null) return;
   const t = (now - k.born) / 1000;
   const p = clamp((now - k.born) / k.enterTime, 0, 1);
-  const toUnit = 1 / Math.max(0.01, c.scale); // 画面 px → 基準単位
   const mood = k.mood;
   const sad = mood === 'sad';
 
-  const en = chunkEntrance(k, p, toUnit);
+  const en = chunkEntrance(k, p);
   // 単語全体のゆるい浮遊（クールな単語はほぼ動かさない）
   const amp = mood === 'cool' ? 0.2 : 0.5 + I * 0.8 + features.motion * 0.8;
   const floatY = Math.sin(t * 1.6 + k.phase) * U * 0.03 * amp;
@@ -1840,8 +1731,7 @@ function drawChunk(c, k, now, I) {
 
   ctx.save();
   ctx.translate(k.x + en.x, k.y + en.y + floatY);
-  const tiltAmt = c.mode === 'columns' || k.vertical ? 0.3 : 1;
-  ctx.rotate(k.tilt * tiltAmt + floatR + en.r + droop);
+  ctx.rotate(k.tilt + floatR + en.r + droop);
   const s = k.s * en.s * beat;
   ctx.scale(s * en.sx, s * en.sy);
   const baseAlpha = c.alpha * en.a;
@@ -1852,19 +1742,14 @@ function drawChunk(c, k, now, I) {
     if (ct < 0) return;
     const ce = charEntrance(k, ct, sad);
     const id = charIdle(mood, now, t, i, c.strength, I);
-    let rot = ce.r + id.r;
+    const rot = ce.r + id.r;
     ctx.save();
     ctx.globalAlpha = baseAlpha * ce.a;
     ctx.translate(ch.ox + ce.x + id.x, ch.oy + ce.y + id.y);
-    if (k.vertical) {
-      if (RE_V_ROTATE.test(ch.ch)) rot += Math.PI / 2;
-      else if (RE_V_PUNCT.test(ch.ch)) ctx.translate(U * 0.32, -U * 0.32);
-      else if (RE_V_SMALL.test(ch.ch)) ctx.translate(U * 0.1, -U * 0.1);
-    }
     if (rot) ctx.rotate(rot);
     const sc = ce.s * id.s;
     if (sc !== 1) ctx.scale(sc, sc);
-    glyph(k, ce.ch || ch.ch, c.state !== 'main');
+    glyph(k, ce.ch || ch.ch, c.simple);
     ctx.restore();
   });
 
@@ -1884,53 +1769,50 @@ function drawChunk(c, k, now, I) {
 }
 
 function drawCaption(c, now) {
-  if (!c.chunks.length || c.alpha < 0.01 || !c.scale) return;
-  // 画面の外にあるページは描かない
-  const r = (Math.max(c.bw, c.bh) / 2 + U) * c.scale * 1.6;
-  if (c.cx + r < 0 || c.cx - r > W || c.cy + r < 0 || c.cy - r > H) return;
+  if (!c.chunks.length || !c.scale || c.top === null) return;
+  // 画面の外にある吹き出しは描かない
+  if (c.top > H || c.top + c.outerH < 0) return;
   const I = c.live ? features.intensity : c.finalI;
-  let ox = 0;
+  let alpha = c.fade ?? 1;
   let oy = 0;
-  let es = 1;
-  let alpha = c.state === 'main' ? 1 : 0.9;
-
   if (c.state === 'leaving') {
-    // ページを閉じる動き（ページごとに違う）
+    // 消えるときは上へ抜けながら薄くなる
     const q = clamp((now - c.leftAt) / CONFIG.exitDur, 0, 1);
     alpha *= 1 - q;
-    switch (c.exit) {
-      case 'pop':
-        es = 1 - easeOutCubic(q) * 0.9;
-        break;
-      case 'up':
-        oy = -q * q * H * 0.4;
-        break;
-      case 'fade':
-        es = 1 + q * 0.05;
-        break;
-      case 'zoomOut':
-        es = 1 + q * 0.5;
-        break;
-      case 'slide':
-        ox = -c.tailDir * q * q * W * 0.5;
-        break;
-    }
+    oy = -q * q * H * 0.1;
   }
+  if (alpha < 0.01) return;
 
   ctx.save();
-  ctx.translate(c.cx + ox, c.cy + oy);
-  ctx.rotate(c.tilt);
-  ctx.scale(c.scale * es, c.scale * es);
+  // 文字の範囲の左上を原点にする（単語の位置は基準単位）
+  ctx.translate(c.left, c.top + c.textTop + oy);
+  ctx.scale(c.scale, c.scale);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
   ctx.miterLimit = 2;
   ctx.globalAlpha = alpha;
-  if (c.bubble) drawBubble(c, now);
+  ctx.save();
+  ctx.translate(c.bw / 2, c.bh / 2);
+  drawBubble(c, now);
+  ctx.restore();
   c.alpha = alpha;
   for (const k of c.chunks) drawChunk(c, k, now, I);
+  // しゃべっている最中は、最後の単語の後ろでカーソルが点滅する（今ここを打ち込んでいる）
+  if (c.live) drawCursor(c, now);
   c.alpha = 1;
   ctx.restore();
+}
+
+function drawCursor(c, now) {
+  const k = c.chunks[c.chunks.length - 1];
+  if (!k || k.x === null || !k.w) return;
+  if (Math.sin(now / 130) < -0.2) return;
+  ctx.globalAlpha = c.alpha * 0.8;
+  ctx.fillStyle = EMOTIONS[c.emotion].glow;
+  const h = U * 0.9 * k.s;
+  ctx.fillRect(k.x + (k.w * k.s) / 2 + U * 0.12, k.y - h / 2, U * 0.12, h);
+  ctx.globalAlpha = 1;
 }
 
 function drawParticles(dt) {
@@ -1974,22 +1856,22 @@ function render(now, dt) {
   drawBackground(now, emotion, I, dt);
 
   // カメラワーク: ごくゆっくり動き、単語が出るたびに少し寄る
-  cam.punch = Math.min(cam.punch, 0.06) * 0.88;
-  const zoom = 1 + cam.punch + Math.sin(now / 3000) * 0.008;
+  cam.punch = Math.min(cam.punch, 0.015) * 0.88;
+  const zoom = 1 + cam.punch;
   ctx.save();
   ctx.translate(W / 2, H / 2);
   ctx.scale(zoom, zoom);
-  ctx.rotate(Math.sin(now / 4700) * 0.004);
   ctx.translate(-W / 2, -H / 2);
   if (fx.shake > 0.3) {
     ctx.translate(jitter(fx.shake), jitter(fx.shake));
     fx.shake *= 0.85;
   }
 
-  // 閉じていくページ → 端に寄せたページ → 今のページ の順に描く
-  for (const c of captions) if (c.state === 'leaving') drawCaption(c, now);
-  for (const c of captions) if (c.state === 'docked') drawCaption(c, now);
-  for (const c of captions) if (c.state === 'main') drawCaption(c, now);
+  // 新しい 2 つの吹き出し以外は、軽い描き方にする（文字起こしは画面に文字が多いので）
+  captions.forEach((c, i) => {
+    c.simple = i < captions.length - 2;
+    drawCaption(c, now);
+  });
   drawParticles(dt);
   ctx.restore();
 
@@ -2016,7 +1898,7 @@ function frame() {
   updateAudio();
   updateFace(now);
   feedFaceAtmosphere(dt);
-  arrangeDocks(now);
+  arrangeTranscript(now);
 
   // 話速: 発話中の字幕の文字数 / 経過時間
   if (liveCaption && liveCaption.text) {
@@ -2048,7 +1930,7 @@ function updateHud(now) {
   if (hud.hidden || now - hudLast < 100) return;
   hudLast = now;
   const emo = currentEmotion();
-  const main = captions.find((c) => c.state === 'main');
+  const main = liveCaption || captions[captions.length - 1];
   const words = main ? main.chunks.map((k) => `${k.text}${k.emoji}<small>(${CATEGORIES[k.category].label}/${k.entrance}/${k.family})</small>`).join(' ') : '';
   const rows = [
     ['音量', features.volume, `${features.db.toFixed(0)}dB`],
@@ -2139,7 +2021,7 @@ window.addEventListener('keydown', (e) => {
       break;
     case 'c':
     case 'C':
-      captions.length = 0;
+      for (const c of captions) c.leave(performance.now());
       topics.length = 0;
       for (const k in atmosphere.score) atmosphere.score[k] = 0;
       summary.cur = '';
