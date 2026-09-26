@@ -27,22 +27,23 @@ const CONFIG = {
   charStagger: 14, // 1 文字ずつ出てくる間隔(ms)
   enterDur: 280, // 単語の登場アニメーションの長さ(ms)
   bubbleChance: 0.5, // ページに吹き出しを付ける確率
-  columnsChance: 0.3, // ページ全体を縦書きにする確率
-  verticalWordChance: 0.18, // 横書きのページの中で、単語だけ縦にする確率
+  columnsChance: 0.4, // 縦書きにしてよいページのうち、実際に縦書きにする確率
+  verticalWordChance: 0.18, // 横書きのページの中で、単語だけ縦にする確率（短いページだけ）
+  columnsMaxChars: 8, // 縦書き（ページ全体・単語だけ）を選択肢に入れるのは、ページがこの文字数以下のときだけ
+  columnsMinFont: 0.16, // 縦書きにしても、1 文字の高さが画面の高さのこの割合以上で出せるときだけ縦書きにする
   pitchMin: 80,
   pitchMax: 600,
   faceInterval: 80, // 表情の認識の間隔(ms)。表情はそこまで速く変わらないので、描画を重くしないよう間引く
   faceGain: 1.6, // 表情の感度（大きいほど、少しの表情の変化でも反応する）
   faceMoodRate: 0.2, // 表情が会話の雰囲気（背景の色）に効く強さ
-  dockTime: 6000, // 前のページを画面の端に残しておく時間(ms)
-  minDock: 1200, // 次のページに押し出されても、最低これだけは端に残す(ms)
-  dockArea: 0.04, // 端に寄せたページの大きさ（画面の面積比）
-  dockHeight: 0.22, // 端に寄せたページの高さの上限（画面の高さ比）
+  logLife: 90000, // 右上の会話の履歴に、1 つの発言を残しておく時間(ms)
+  logMax: 8, // 右上の会話の履歴に並べる発言の数の上限
+  logWidth: 0.26, // 右上の会話の履歴の幅（画面の幅比）。字幕はこの分を避けて表示する
   moodHalfLife: 25000, // 会話の雰囲気（背景の色）が前の話題を引きずる時間の目安(ms)
-  summaryHalfLife: 40000, // 中央の要約の絵文字が、前の話題を引きずる時間の目安(ms)
+  summaryHalfLife: 20000, // 中央の要約の絵文字が、前の話題を引きずる時間の目安(ms)
   summaryAlpha: 0.13, // 中央の要約の絵文字の濃さ
   showTopics: true, // 会話に出た話題の絵文字を背景に表示する（T キーで切替）
-  topicLife: 120000, // 話題の絵文字が、最後に話に出てから消えるまで(ms)
+  topicLife: 30000, // 話題の絵文字が、最後に話に出てから消えるまで(ms)。だんだん薄くなって消える
   topicMax: 14, // 背景に出す話題の数の上限
   topicAlpha: 0.14, // 背景の絵文字の濃さ
   topicDrift: 0.0025, // 話題が左へ流れる速さ（画面幅/秒）。右が今の話題、左が少し前の話題
@@ -627,6 +628,12 @@ class Chunk {
     return m === 'calm' ? EMO_MOOD[this.cap.emotion] || 'calm' : m;
   }
 
+  // 縦書きにするか: ページ全体が縦書き、または短いページで単語だけ縦にするとき
+  get vertical() {
+    const c = this.cap;
+    return c.mode === 'columns' || (c.vwords && this.text.length >= 2 && this.text.length <= 6 && this.roll.vert < CONFIG.verticalWordChance);
+  }
+
   get mood() {
     return this.moodFor(this.category);
   }
@@ -651,8 +658,6 @@ class Chunk {
     this.font = fontSpec(this.family);
     this.style = pickBy(cat.styles, this.roll.style);
     this.palIndex = Math.floor(this.roll.pal * cat.palettes.length);
-    this.vertical =
-      this.cap.mode === 'columns' || (text.length >= 2 && text.length <= 6 && this.roll.vert < CONFIG.verticalWordChance);
     const emoji = findEmoji(text);
     if (emoji !== this.emoji) {
       this.emoji = emoji;
@@ -725,23 +730,21 @@ class Caption {
   constructor(now) {
     this.seed = Math.floor(Math.random() * 1e9);
     const r = mulberry32(this.seed);
-    this.mode = r() < CONFIG.columnsChance ? 'columns' : 'rows';
+    this.wantColumns = r() < CONFIG.columnsChance; // 条件を満たせば縦書きにしたいページ
+    this.mode = 'rows'; // 実際の組み方（chooseMode で決める）
+    this.vwords = false; // 横書きの中で単語だけ縦にしてよいか
     this.zigzag = r() < 0.5; // 行（列）ごとに左右（上下）に寄せる
     this.bubble = r() < CONFIG.bubbleChance;
     this.tailDir = r() < 0.5 ? -1 : 1;
     this.offRoll = [r() * 2 - 1, r() * 2 - 1];
-    this.tilt = this.mode === 'rows' ? (r() - 0.5) * 0.05 : 0;
+    this.tiltRoll = (r() - 0.5) * 0.05;
     this.exit = pickBy(EXITS, r());
-    this.dockedAt = 0;
-    this.dockX = 0;
-    this.dockY = 0;
-    this.dockS = 0;
     this.born = now;
     this.text = '';
     this.chunks = [];
     this.live = true;
     this.committedAt = 0;
-    this.state = 'main'; // main → docked（画面の端に小さく残る）→ leaving（閉じるアニメーション）→ 消える
+    this.state = 'main'; // main → leaving（閉じるアニメーション）→ 消える。内容は右上の会話の履歴に残る
     this.leftAt = 0;
     this.peak = features.recentPeak;
     this.finalI = 0;
@@ -771,6 +774,7 @@ class Caption {
       }
     }
     this.chunks.length = parts.length;
+    this.chooseMode();
     // 隣り合う単語が同じ配色にならないようにする
     for (let i = 1; i < this.chunks.length; i++) {
       const a = this.chunks[i - 1];
@@ -800,15 +804,35 @@ class Caption {
     // 確定したページのキーワードの絵文字を、背景の「話題」に加え、会話の雰囲気にも反映する
     for (const k of this.chunks) if (k.emoji) addTopic(k.emoji, now);
     feedAtmosphere(this);
+    addLog(this);
   }
 
-  // 次のページが出るとき、今のページは画面の端に小さく寄せて残す
-  dock(now) {
-    if (this.state !== 'main') return;
-    // 改ページで単語が減った直後でも正しい大きさで寄せられるよう、最後にもう一度組み直す
-    this.layout();
-    this.state = 'docked';
-    this.dockedAt = now;
+  get tilt() {
+    return this.mode === 'rows' ? this.tiltRoll : 0;
+  }
+
+  // 縦書きにするかを決める。ページが短く、縦書きでも文字を十分大きく出せるときだけ縦書きを選ぶ
+  chooseMode() {
+    const chars = this.chunks.reduce((a, k) => a + k.text.length, 0);
+    const short = chars <= CONFIG.columnsMaxChars;
+    const fitOf = (mode, vwords) => {
+      this.mode = mode;
+      this.vwords = vwords;
+      for (const k of this.chunks) k.measured = false;
+      return this.bestFlow(this.chunks).fit;
+    };
+    const prev = this.mode + this.vwords;
+    let mode = 'rows';
+    let vwords = false;
+    if (short && this.chunks.length) {
+      const big = (fit) => fit * U >= H * CONFIG.columnsMinFont;
+      if (this.wantColumns && big(fitOf('columns', false))) mode = 'columns';
+      else if (big(fitOf('rows', true))) vwords = true;
+    }
+    this.mode = mode;
+    this.vwords = vwords;
+    for (const k of this.chunks) k.measured = false;
+    if (prev !== mode + vwords) this.limitIdx = -1;
   }
 
   leave(now) {
@@ -850,17 +874,11 @@ class Caption {
       const last = this.chunks[this.chunks.length - 1];
       if (last && this.volOverride === null) last.vol = Math.max(last.vol, features.intensity);
     } else if (this.state === 'main' && now - this.committedAt > CONFIG.captionLife) {
-      this.dock(now);
+      this.leave(now);
     }
 
     if (this.state === 'main') this.layout();
-    else if (this.state === 'docked') {
-      // 画面の端へ滑らかに移動して小さくなる
-      this.cx = lerp(this.cx, this.dockX, 0.14);
-      this.cy = lerp(this.cy, this.dockY, 0.14);
-      this.scale = lerp(this.scale, this.dockS, 0.14);
-      if (now - this.dockedAt > CONFIG.dockTime) this.leave(now);
-    } else if (now - this.leftAt > CONFIG.exitDur) this.dead = true;
+    else if (now - this.leftAt > CONFIG.exitDur) this.dead = true;
 
     // 単語を目標位置へ滑らかに動かす（行の組み替えもアニメーションになる）
     for (const k of this.chunks) {
@@ -876,12 +894,12 @@ class Caption {
     }
   }
 
-  // 使える領域（端に寄せたページがあるときは、上の帯を空けておく）
+  // 使える領域（右上に会話の履歴があるときは、その幅を空けておく）
   avail(full = false) {
     if (full) return { w: W * 0.95, h: H * 0.92, pad: 0 };
     return {
-      w: W * (this.bubble ? 0.8 : 0.95),
-      h: H * (this.bubble ? 0.74 : 0.86) - dockReserve,
+      w: W * (this.bubble ? 0.8 : 0.95) - logReserve,
+      h: H * (this.bubble ? 0.74 : 0.86),
       pad: this.bubble ? U * 0.35 : 0,
     };
   }
@@ -941,8 +959,8 @@ class Caption {
     const A = this.avail();
     const spareX = Math.max(0, (A.w - (f.bw + A.pad * 2) * this.scale) / 2);
     const spareY = Math.max(0, (A.h - (f.bh + A.pad * 2) * this.scale) / 2);
-    this.cx = lerp(this.cx, W / 2 + this.offRoll[0] * spareX, 0.2);
-    this.cy = lerp(this.cy, H / 2 + dockReserve / 2 + this.offRoll[1] * spareY, 0.2);
+    this.cx = lerp(this.cx, (W - logReserve) / 2 + this.offRoll[0] * spareX, 0.2);
+    this.cy = lerp(this.cy, H / 2 + this.offRoll[1] * spareY, 0.2);
   }
 
   flow(items, limit, gap, cols) {
@@ -996,49 +1014,57 @@ const particles = [];
 const fx = { shake: 0, flashColor: '#000', flash: 0 };
 const cam = { punch: 0, rot: 0 };
 
-let dockReserve = 0; // 端に寄せたページのために空けておく上の帯の高さ(px)
+/* 右上の会話の履歴
+ *   確定したページの文字を、読みやすい普通の文字で並べておく（絵文字付き）。
+ *   同じ発言が何ページかに分かれても 1 つにまとめる。logLife たつと薄くなって消える */
+const logEl = document.getElementById('log');
+const logItems = []; // { utter, el, text, last }
+let logReserve = 0; // 字幕が避ける右側の幅(px)
+let utterCount = 0; // 発言の通し番号（ページがどの発言のものか）
 
-// 端に寄せる側（-1: 左, 1: 右）。ページごとに左右交互にする
-let dockFlip = 1;
-function pageSide(c) {
-  if (!c.side) c.side = dockFlip = -dockFlip;
-  return c.side;
+function addLog(c) {
+  const text = c.chunks.map((k) => k.text + (k.emoji || '')).join('');
+  if (!text) return;
+  const now = performance.now();
+  let item = logItems[logItems.length - 1];
+  if (!item || item.utter !== c.utter) {
+    const el = document.createElement('div');
+    el.className = 'log-item';
+    logEl.appendChild(el);
+    item = { utter: c.utter, el, text: '', last: now };
+    logItems.push(item);
+  }
+  item.text += text;
+  item.last = now;
+  item.el.textContent = item.text;
+  item.el.style.borderColor = EMOTIONS[c.emotion].color;
+  while (logItems.length > CONFIG.logMax) logItems.shift().el.remove();
+  logEl.hidden = false;
 }
 
-// 端に寄せたページの置き場所: 画面上部の左右の角に 1 枚ずつ。
-// 同じ側に新しいページが来たら古い方は閉じる（端に来てから minDock たっていれば。2 枚を超える分はすぐ閉じる）
-function arrangeDocks(now) {
-  const docked = captions.filter((c) => c.state === 'docked').sort((a, b) => b.dockedAt - a.dockedAt);
-  const count = { '-1': 0, 1: 0 };
-  const m = 16;
-  const cursor = { '-1': m + H * 0.03, 1: m + H * 0.03 };
-  let bottom = 0;
-  for (const c of docked) {
-    const side = pageSide(c);
-    const slot = count[side]++;
-    if (slot >= 2 || (slot >= 1 && now - c.dockedAt > CONFIG.minDock)) {
-      c.leave(now);
-      continue;
-    }
-    const A = c.avail();
-    const bw = c.bw + A.pad * 2;
-    const bh = c.bh + A.pad * 2;
-    // 面積で大きさを揃える（縦書きのページが極端に小さくならないように）
-    // 文字が大きくなりすぎないよう、1 文字の高さも画面の 8% までに抑える
-    c.dockS = Math.min(Math.sqrt((W * H * CONFIG.dockArea) / (bw * bh)), (H * CONFIG.dockHeight) / bh, (W * 0.4) / bw, (H * 0.08) / U);
-    const w = bw * c.dockS;
-    const h = bh * c.dockS;
-    c.dockX = side < 0 ? m + w / 2 : W - m - w / 2;
-    c.dockY = cursor[side] + h / 2;
-    cursor[side] += h + 8;
-    if (slot === 0) bottom = Math.max(bottom, c.dockY + h / 2 + 8);
+function updateLog(now) {
+  for (let i = logItems.length - 1; i >= 0; i--) {
+    const it = logItems[i];
+    const age = now - it.last;
+    if (age > CONFIG.logLife) {
+      it.el.remove();
+      logItems.splice(i, 1);
+    } else it.el.style.opacity = String(clamp((CONFIG.logLife - age) / 5000, 0, 1));
   }
-  dockReserve = lerp(dockReserve, bottom, 0.1);
+  if (!logItems.length) logEl.hidden = true;
+  logReserve = lerp(logReserve, logItems.length && !logEl.hidden ? W * (CONFIG.logWidth + 0.01) : 0, 0.1);
+}
+
+function clearLog() {
+  for (const it of logItems) it.el.remove();
+  logItems.length = 0;
+  logEl.hidden = true;
 }
 
 function newCaption(now) {
-  for (const c of captions) c.dock(now);
+  for (const c of captions) c.leave(now);
   const c = new Caption(now);
+  c.utter = utterCount;
   c.volOverride = pendingVol;
   captions.push(c);
   cam.punch += 0.03;
@@ -1113,6 +1139,7 @@ function updateLive(raw) {
   const text = normalize(raw);
   if (!text) return;
   if (!liveCaption) {
+    utterCount++;
     liveCaption = newCaption(now);
     utter.start = 0;
   }
@@ -1129,6 +1156,7 @@ function commitUtterance(raw) {
   const text = normalize(raw);
   if (!liveCaption) {
     if (!text) return;
+    utterCount++;
     liveCaption = newCaption(now);
     utter.start = 0;
   }
@@ -1299,7 +1327,7 @@ function drawTopics(now, dt) {
     const size = H * (0.1 + 0.045 * t.weight) * (1 + t.pulse * 0.25) * easeOutCubic(intro);
     const x = t.x * W + Math.sin(now / 9000 + t.phase) * W * 0.02;
     const y = t.y * H + Math.cos(now / 11000 + t.phase) * H * 0.025;
-    ctx.globalAlpha = CONFIG.topicAlpha * Math.min(1, fade * 3) * (0.7 + 0.08 * t.weight) * intro;
+    ctx.globalAlpha = CONFIG.topicAlpha * Math.min(1, fade * 1.5) * (0.7 + 0.08 * t.weight) * intro;
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(Math.sin(now / 7000 + t.phase) * 0.12);
@@ -1394,7 +1422,7 @@ function drawSummary(now) {
     const size = H * 0.62 * s * (1 + Math.sin(now / 2400) * 0.025);
     ctx.save();
     ctx.globalAlpha = CONFIG.summaryAlpha * a;
-    ctx.translate(W / 2, H / 2 + dockReserve / 2);
+    ctx.translate((W - logReserve) / 2, H / 2);
     ctx.rotate(Math.sin(now / 6000) * 0.05);
     ctx.scale(size / U, size / U);
     drawEmoji(emoji);
@@ -1988,7 +2016,6 @@ function render(now, dt) {
 
   // 閉じていくページ → 端に寄せたページ → 今のページ の順に描く
   for (const c of captions) if (c.state === 'leaving') drawCaption(c, now);
-  for (const c of captions) if (c.state === 'docked') drawCaption(c, now);
   for (const c of captions) if (c.state === 'main') drawCaption(c, now);
   drawParticles(dt);
   ctx.restore();
@@ -2016,7 +2043,7 @@ function frame() {
   updateAudio();
   updateFace(now);
   feedFaceAtmosphere(dt);
-  arrangeDocks(now);
+  updateLog(now);
 
   // 話速: 発話中の字幕の文字数 / 経過時間
   if (liveCaption && liveCaption.text) {
@@ -2141,6 +2168,7 @@ window.addEventListener('keydown', (e) => {
     case 'C':
       captions.length = 0;
       topics.length = 0;
+      clearLog();
       for (const k in atmosphere.score) atmosphere.score[k] = 0;
       summary.cur = '';
       liveCaption = null;

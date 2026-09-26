@@ -254,3 +254,39 @@ kbd {
 #toast.show {
   opacity: 1;
 }
+
+/* ---------- 右上の会話の履歴 ---------- */
+#log {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  width: 26vw;
+  max-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 6px;
+  overflow: hidden;
+  z-index: 4;
+  pointer-events: none;
+}
+
+#log[hidden] {
+  display: none;
+}
+
+.log-item {
+  padding: 6px 12px;
+  background: rgba(10, 10, 18, 0.72);
+  border-left: 6px solid #fff;
+  border-radius: 8px;
+  font: 700 clamp(16px, 1.5vw, 28px) / 1.45 'Hiragino Sans', 'Yu Gothic', 'Meiryo', sans-serif;
+  color: #fff;
+  word-break: break-all;
+  transition: opacity 0.5s;
+}
+
+/* 最新の発言をいちばん目立たせる */
+.log-item:last-child {
+  background: rgba(10, 10, 18, 0.85);
+}
