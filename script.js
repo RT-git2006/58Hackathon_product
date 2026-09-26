@@ -14,8 +14,6 @@
 // ---------- 設定 ----------
 const CONFIG = {
   lang: 'ja-JP',
-  asr: 'auto', // 音声認識: 'auto'（node server.js で Azure のキーがあれば Azure AI Speech、なければ Chrome）/ 'webspeech'（常に Chrome）
-  azureSdk: 'https://cdn.jsdelivr.net/npm/microsoft-cognitiveservices-speech-sdk@1.51.0/distrib/browser/microsoft.cognitiveservices.speech.sdk.bundle-min.js',
   fallbackFont: "'Hiragino Sans', 'Meiryo', sans-serif",
   U: 100, // レイアウト計算の基準フォントサイズ(px)。描画時に画面に合わせて拡大する
   maxWordRatio: 0.6, // 基準の単語 1 文字の高さの上限（画面の高さ比）
@@ -1135,19 +1133,6 @@ function paginate(text, now) {
   }
 }
 
-// 認識結果の書き換え（句読点が付く・言い直しが直る）で全文が変わっても、前のページまでに出した部分の続きから表示する。
-// 句読点を数えずに、前のページまでに出した文字数を新しい全文の中で数え直す
-const RE_PUNCT = /[、。，．,.!！?？s]/;
-function alignStart(oldText, start, newText) {
-  let n = 0;
-  for (let i = 0; i < start && i < oldText.length; i++) if (!RE_PUNCT.test(oldText[i])) n++;
-  let i = 0;
-  for (; i < newText.length && n > 0; i++) if (!RE_PUNCT.test(newText[i])) n--;
-  // 前のページの直後の句読点は、次のページの頭に出さない
-  while (i < newText.length && RE_PUNCT.test(newText[i])) i++;
-  return start ? i : 0;
-}
-
 // 認識途中のテキスト（発話の頭からの全文が毎回届く）
 function updateLive(raw) {
   const now = performance.now();
@@ -1158,8 +1143,9 @@ function updateLive(raw) {
     liveCaption = newCaption(now);
     utter.start = 0;
   }
-  utter.start = alignStart(utter.text, utter.start, text);
   utter.text = text;
+  // 認識の書き換えで全文が短くなった場合
+  utter.start = Math.min(utter.start, text.length);
   liveCaption.setText(text.slice(utter.start), now);
   paginate(text, now);
 }
@@ -1174,7 +1160,7 @@ function commitUtterance(raw) {
     liveCaption = newCaption(now);
     utter.start = 0;
   }
-  utter.start = alignStart(utter.text, utter.start, text);
+  utter.start = Math.min(utter.start, text.length);
   const rest = text.slice(utter.start);
   if (rest) {
     liveCaption.setText(rest, now);
@@ -1197,92 +1183,12 @@ function commitTyped(text) {
 }
 
 /* =========================================================
- * 音声認識: Azure AI Speech（使えるとき）→ Chrome の Web Speech API（代わり）
+ * Web Speech API: 音声認識
  * ========================================================= */
 let recognition = null;
 let running = false;
-let asrEngine = 'なし'; // 今使っている音声認識（解析値表示用）
 
-async function initRecognition() {
-  if (CONFIG.asr === 'auto' && (await initAzure())) return;
-  initWebSpeech();
-}
-
-// Azure の一時トークン（node server.js が .env のキーで発行する。10 分有効）
-async function fetchSpeechToken() {
-  const r = await fetch('/api/speech-token', { cache: 'no-store' });
-  if (!r.ok) throw new Error('speech-token ' + r.status);
-  return r.json();
-}
-
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const el = document.createElement('script');
-    el.src = src;
-    el.onload = resolve;
-    el.onerror = () => reject(new Error('読み込めません: ' + src));
-    document.head.appendChild(el);
-  });
-}
-
-// Azure AI Speech で認識する。使えなければ false（python の簡易サーバーや file:// で開いたとき、キーが無いときなど）
-async function initAzure() {
-  let auth;
-  try {
-    auth = await fetchSpeechToken();
-  } catch (err) {
-    return false;
-  }
-  let timer = 0;
-  try {
-    await loadScript(CONFIG.azureSdk);
-    const sdk = window.SpeechSDK;
-    const config = sdk.SpeechConfig.fromAuthorizationToken(auth.token, auth.region);
-    config.speechRecognitionLanguage = CONFIG.lang;
-    const rec = new sdk.SpeechRecognizer(config, sdk.AudioConfig.fromDefaultMicrophoneInput());
-    // 辞書の単語を認識のヒントとして渡す（フレーズリスト）
-    const phrases = sdk.PhraseListGrammar.fromRecognizer(rec);
-    for (const w of HINT_WORDS.slice(0, 500)) phrases.addPhrase(w);
-
-    // 途中結果（発話の頭からの全文）と確定結果。確定結果には句読点が付く
-    rec.recognizing = (_, e) => updateLive(e.result.text);
-    rec.recognized = (_, e) => {
-      if (e.result.reason === sdk.ResultReason.RecognizedSpeech && e.result.text) commitUtterance(e.result.text);
-      else if (liveCaption) commitUtterance(utter.text);
-    };
-    rec.canceled = (_, e) => {
-      if (e.reason !== sdk.CancellationReason.Error) return;
-      console.warn('Azure の音声認識が止まりました', e.errorDetails);
-      clearInterval(timer);
-      rec.close();
-      if (liveCaption) commitUtterance(utter.text);
-      toast('Azure の音声認識が止まったので、Chrome の音声認識に切り替えます', 5000);
-      initWebSpeech();
-    };
-    await new Promise((resolve, reject) => rec.startContinuousRecognitionAsync(resolve, reject));
-    // トークンは 10 分で切れるので、9 分ごとに取り直す
-    timer = setInterval(async () => {
-      try {
-        rec.authorizationToken = (await fetchSpeechToken()).token;
-      } catch (err) {
-        console.warn('トークンを更新できません', err);
-      }
-    }, 9 * 60 * 1000);
-    recognition = rec;
-    running = true;
-    asrEngine = 'Azure AI Speech';
-    toast('音声認識: Azure AI Speech');
-    return true;
-  } catch (err) {
-    console.error(err);
-    clearInterval(timer);
-    toast('Azure の音声認識を開始できないので、Chrome の音声認識を使います', 5000);
-    return false;
-  }
-}
-
-// Chrome の Web Speech API で認識する
-function initWebSpeech() {
+function initRecognition() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
     toast('このブラウザは音声認識に対応していません（Chrome 推奨）。Enter で手入力できます', 6000);
@@ -1337,7 +1243,6 @@ function initWebSpeech() {
   };
 
   running = true;
-  asrEngine = 'Chrome（Web Speech API）';
   startRecognition();
 }
 
@@ -2191,7 +2096,7 @@ function updateHud(now) {
       )
       .join('') +
     `<div class="row"><span class="label">感情</span><span style="color:${EMOTIONS[emo].color}">${EMOTIONS[emo].label}</span></div>` +
-    `<div class="row"><span class="label">認識</span><span>${running ? '● 聞き取り中' : '停止'}（${asrEngine}）</span></div>` +
+    `<div class="row"><span class="label">認識</span><span>${running ? '● 聞き取り中' : '停止'}</span></div>` +
     `<div class="row"><span class="label">表情</span><span>${features.faceDetected ? EXPRESSION_LABEL[currentExpression()] : '顔なし'}</span></div>` +
     `<div class="row"><span class="label">雰囲気</span><span style="color:${MOODS[atmosphere.mood].colors[0]}">${MOODS[atmosphere.mood].label}</span>` +
     `<span style="opacity:0.6">&nbsp;${Object.entries(atmosphere.score)
