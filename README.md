@@ -25,7 +25,10 @@ python -m http.server 8000
 | `D` | 解析値（音量・ピッチ・話速・強さ・感情、単語ごとのカテゴリ/フォント）の表示 |
 | `Enter` | テキスト手入力（音声認識が使えない時の代替。`!` の数で強さが上がる） |
 | `C` | 字幕をクリア |
-| `V` | カメラ映像（骨格）プレビューの表示切替 |
+| `V` | カメラ映像（骨格・顔ごとの話者名）プレビューの表示切替 |
+| `1`〜`4` | 今しゃべっている人を 話者1〜4 に指定（識別を外したときの修正。その声を覚え直す） |
+| `S` | 話者名の表示切替 |
+| `R` | 話者をリセット |
 
 ## 構成
 
@@ -54,13 +57,19 @@ python -m http.server 8000
    - クール: スライド・流れ込み・タイプライター・文字スクランブル → ほぼ静止
 9. **見た目**: カテゴリでフォント・配色を選び、テレビのテロップ風に 影＋黒フチ＋白フチ＋グラデーション 等で描く。単語に合う絵文字（`lexicon.js` の `EMOJI`）があれば単語の後ろに添える。吹き出しは感情で輪郭が変わる（平常=角丸、驚き=ウニフラッシュ、怒り=ギザギザ、喜び=もこもこ、恐怖=波打つ、悲しみ=しずく）。背景はほぼ一定の暗色に感情の色をうっすら乗せる程度にし、集中線・紙吹雪は強く叫んだときだけ出す。
 
+10. **前のページを残す**: 次のページが出るとき、前のページは閉じずに画面上部の端へ小さく寄せる（話者1 は左、話者2 は右など、話者の側）。`CONFIG.dockTime` の間残り、同じ側に新しいページが来ても最低 `CONFIG.minDock` は残す。
+11. **話者の識別**: カメラに顔が映っていれば、MediaPipe Face Landmarker の口の開き（jawOpen）の変化で「声が出ている時に口が動いている人」を話者にする。映っていなければ、声の高さ（ピッチ）と声質（スペクトル重心）の近さで見分ける。話者が替わったらページを切り替え、話者名の札を付ける。外れたときは `1`〜`4` キーで指定できる。
+12. **関西弁**: 関西弁の語彙（なんでやねん・しんど・あかん・しばく・おおきに 等）をカテゴリと絵文字の辞書に追加。「やねん」「へん」「やん」などの文末は前の単語にくっつけ、「めっちゃ」「ほんま」「ごっつ」などの強調語は大きく表示する。
+
 ### 調整ポイント
 
 - 反応の感度: `CONFIG.dbFloor` / `CONFIG.dbCeil`（会場のマイクに合わせて `D` キーの dB 値を見ながら調整）
 - 文字の最大サイズ: `CONFIG.maxWordRatio`
 - 1 ページの長さ: `CONFIG.pageMaxChars` / `CONFIG.minFontRatio`
 - 縦書き・吹き出しの出やすさ: `CONFIG.columnsChance` / `CONFIG.verticalWordChance` / `CONFIG.bubbleChance`
-- 語彙・フォント・配色・絵文字: `lexicon.js` の `WORDS` / `KANJI` / `CATEGORIES` / `EMOJI`
+- 語彙・フォント・配色・絵文字: `lexicon.js` の `WORDS` / `KANJI` / `CATEGORIES` / `EMOJI`（関西弁は `KANSAI` / `KANSAI_EMOJI`）
 - ムードごとの動き: `script.js` の `MOOD_ENTRANCES` / `chunkEntrance` / `charEntrance` / `charIdle`
+- 前のページを残す時間・大きさ: `CONFIG.dockTime` / `CONFIG.minDock` / `CONFIG.dockArea`
+- 話者の識別の感度: `CONFIG.newSpeakerDist`（小さいほど別人と判断しやすい）/ `CONFIG.speakerSwitchMs` / `CONFIG.mouthAct`
 - 声と動きの混ぜ方: `computeIntensity` / `prosodyScores`
 - 動きの感度: `updateBody` 内の `/ 4`（肩幅/秒の何倍で最大とするか）

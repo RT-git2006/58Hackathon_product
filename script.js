@@ -31,9 +31,23 @@ const CONFIG = {
   pitchMin: 80,
   pitchMax: 600,
   poseInterval: 50, // 姿勢推定の間隔(ms)。毎フレーム回すと描画が重くなる
+  faceInterval: 66, // 顔検出（話者の口の動き）の間隔(ms)
+  dockTime: 6000, // 前のページを画面の端に残しておく時間(ms)
+  minDock: 1500, // 次のページに押し出されても、最低これだけは端に残す(ms)
+  dockArea: 0.04, // 端に寄せたページの大きさ（画面の面積比）
+  dockHeight: 0.22, // 端に寄せたページの高さの上限（画面の高さ比）
+  showSpeakers: true, // 話者名を表示する（S キーで切替）
+  maxSpeakers: 4,
+  pitchTol: 0.3, // 声の高さの許容差（オクターブ）
+  centTol: 0.4, // 声質（スペクトル重心）の許容差（オクターブ）
+  newSpeakerDist: 1.8, // これより声が遠ければ新しい話者
+  newSpeakerMs: 700, // 知らない声がこれだけ続いたら新しい話者にする(ms)
+  speakerSwitchMs: 600, // 別の話者の証拠がこれだけ続いたら話者を切り替える(ms)
+  mouthAct: 0.2, // 口の動きがこれ以上なら、その顔の人がしゃべっているとみなす
   mediapipeVersion: '0.10.14',
   poseModel:
     'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+  faceModel: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
 };
 const U = CONFIG.U;
 
@@ -158,7 +172,7 @@ function computeIntensity(f) {
 /* =========================================================
  * Web Audio API: 音量とピッチ
  * ========================================================= */
-const audio = { ctx: null, analyser: null, buf: null, half: null, frame: 0 };
+const audio = { ctx: null, analyser: null, buf: null, half: null, freq: null, frame: 0 };
 
 function initAudio(stream) {
   audio.ctx = new AudioContext();
@@ -170,6 +184,23 @@ function initAudio(stream) {
   src.connect(audio.analyser);
   audio.buf = new Float32Array(audio.analyser.fftSize);
   audio.half = new Float32Array(audio.analyser.fftSize / 2);
+  audio.freq = new Float32Array(audio.analyser.frequencyBinCount);
+}
+
+// 声質の目安: 80〜5000Hz のスペクトル重心（log2 Hz）
+function spectralCentroid() {
+  audio.analyser.getFloatFrequencyData(audio.freq);
+  const binHz = audio.ctx.sampleRate / audio.analyser.fftSize;
+  const lo = Math.floor(80 / binHz);
+  const hi = Math.min(audio.freq.length - 1, Math.floor(5000 / binHz));
+  let num = 0;
+  let den = 0;
+  for (let i = lo; i <= hi; i++) {
+    const m = Math.pow(10, audio.freq[i] / 20);
+    num += m * i * binHz;
+    den += m;
+  }
+  return den > 0 ? Math.log2(num / den) : 0;
 }
 
 function updateAudio() {
@@ -194,9 +225,19 @@ function updateAudio() {
     if (p > 0) {
       features.pitch = features.pitch ? lerp(features.pitch, p, 0.4) : p;
       features.pitchBase = features.pitchBase ? lerp(features.pitchBase, p, 0.005) : p;
+      // 話者の識別用に、直近の声の高さと声質を持っておく
+      const t = performance.now();
+      const cent = spectralCentroid();
+      const fresh = t - voiceNow.at < 300;
+      voiceNow.pitch = fresh ? lerp(voiceNow.pitch, Math.log2(p), 0.25) : Math.log2(p);
+      voiceNow.cent = fresh ? lerp(voiceNow.cent, cent, 0.25) : cent;
+      voiceNow.at = t;
     }
   }
-  const target = features.pitchBase ? clamp((features.pitch / features.pitchBase - 1) / 0.5, 0, 1) : 0;
+  // 声の高ぶりは、今の話者の普段の高さと比べる（声の高い人が常に「興奮」扱いにならないように）
+  const sp = spk.active && speakerById(spk.active);
+  const base = sp && sp.pitch ? Math.pow(2, sp.pitch) : features.pitchBase;
+  const target = base ? clamp((features.pitch / base - 1) / 0.5, 0, 1) : 0;
   features.pitchExcite = lerp(features.pitchExcite, v > 0.1 ? target : 0, 0.2);
 }
 
@@ -252,7 +293,7 @@ async function initBody() {
     toast('動き検出を準備中…', 10000);
     const base = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${CONFIG.mediapipeVersion}`;
     // classic script から ES モジュールを動的 import（ビルド不要のまま使うため）
-    const { FilesetResolver, PoseLandmarker } = await import(`${base}/vision_bundle.mjs`);
+    const { FilesetResolver, PoseLandmarker, FaceLandmarker } = await import(`${base}/vision_bundle.mjs`);
     const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
     const create = (delegate) =>
       PoseLandmarker.createFromOptions(fileset, {
@@ -265,6 +306,20 @@ async function initBody() {
     camView.width = 320;
     camView.height = 240;
     toast('動き検出 ON（V キーでカメラ表示）');
+    // 話者の識別用の顔検出（口の動き）。読み込めなくても声だけで話者を見分ける
+    const createFace = (delegate) =>
+      FaceLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: CONFIG.faceModel, delegate },
+        runningMode: 'VIDEO',
+        numFaces: CONFIG.maxSpeakers,
+        outputFaceBlendshapes: true,
+      });
+    face.landmarker = await createFace('GPU')
+      .catch(() => createFace('CPU'))
+      .catch((err) => {
+        console.error(err);
+        return null;
+      });
   } catch (err) {
     console.error(err);
     toast('動き検出を読み込めませんでした（声だけで動作します）', 5000);
@@ -357,6 +412,207 @@ function drawCamView() {
     }
   }
   camCtx.restore();
+  // 顔ごとの話者名（輪の太さ＝口の動き）
+  camCtx.font = 'bold 14px sans-serif';
+  camCtx.textAlign = 'center';
+  for (const t of face.tracks) {
+    const sp = t.speaker && speakerById(t.speaker);
+    const color = sp ? sp.color : '#888';
+    camCtx.strokeStyle = color;
+    camCtx.fillStyle = color;
+    camCtx.lineWidth = 2 + t.act * 8;
+    camCtx.beginPath();
+    camCtx.arc(t.x * w, t.y * h, 22, 0, Math.PI * 2);
+    camCtx.stroke();
+    camCtx.fillText(sp ? sp.name : '?', t.x * w, t.y * h - 28);
+  }
+}
+
+/* =========================================================
+ * 話者の識別
+ *  - カメラに顔が映っていれば、MediaPipe Face Landmarker で「声が出ている時に口が動いている人」を話者にする
+ *  - 映っていなければ、声の高さ（ピッチ）と声質（スペクトル重心）の近さで話者を見分ける
+ *  - 外れたときは 1〜4 キーで今の話者を指定できる（その声を覚え直す）
+ * ========================================================= */
+const SPEAKER_COLORS = ['#ff4f8b', '#35c3ff', '#ffc93c', '#6dff8a', '#b98cff', '#ff9147'];
+// 直近の声の特徴（log2 で持つ。1 違うと 1 オクターブ）
+const voiceNow = { pitch: 0, cent: 0, at: 0 };
+const spk = { list: [], active: null, cand: null, candTime: 0, unknownTime: 0 };
+const face = { landmarker: null, lastRun: 0, tracks: [] };
+
+const speakerById = (id) => spk.list.find((s) => s.id === id) || null;
+
+function createSpeaker() {
+  const id = spk.list.length + 1;
+  const sp = {
+    id,
+    name: `話者${id}`,
+    color: SPEAKER_COLORS[(id - 1) % SPEAKER_COLORS.length],
+    pitch: voiceNow.pitch,
+    cent: voiceNow.cent,
+    side: null, // カメラ上の左右位置（0=左, 1=右）。顔が見えた時だけ
+  };
+  spk.list.push(sp);
+  return sp;
+}
+
+function voiceFresh(now) {
+  return voiceNow.at > 0 && now - voiceNow.at < 150;
+}
+
+function voiceDist(sp) {
+  return Math.abs(sp.pitch - voiceNow.pitch) / CONFIG.pitchTol + Math.abs(sp.cent - voiceNow.cent) / CONFIG.centTol;
+}
+
+// 声だけで判断: いちばん近い話者の id。どの話者とも遠ければ 'new'
+function voiceEvidence(now) {
+  if (!voiceFresh(now)) return null;
+  let best = null;
+  let bd = Infinity;
+  for (const sp of spk.list) {
+    const d = voiceDist(sp);
+    if (d < bd) {
+      bd = d;
+      best = sp;
+    }
+  }
+  // 話者が 2 人以上いるときは、新しい人と判断する基準を厳しくする（大声で声が裏返っただけで別人にしない）
+  const limit = spk.list.length >= 2 ? CONFIG.newSpeakerDist * 1.4 : CONFIG.newSpeakerDist;
+  if (!best || (bd > limit && spk.list.length < CONFIG.maxSpeakers)) return 'new';
+  return best.id;
+}
+
+// 顔で判断: 口がいちばん動いている顔の話者 id（顔が無い・誰の口も動いていなければ null）
+function faceEvidence(now) {
+  const tracks = face.tracks.filter((t) => now - t.seen < 300);
+  if (!tracks.length) return null;
+  tracks.sort((a, b) => b.act - a.act);
+  const best = tracks[0];
+  const second = tracks[1] ? tracks[1].act : 0;
+  if (best.act < CONFIG.mouthAct || best.act < second * 1.5) return null;
+  if (!best.speaker) {
+    const tracked = new Set(face.tracks.map((t) => t.speaker).filter(Boolean));
+    // 以前その位置にいた話者 → 声が近い話者 → 新しい話者 の順に割り当てる
+    let sp = spk.list.find((s) => !tracked.has(s.id) && s.side !== null && Math.abs(s.side - best.x) < 0.15);
+    if (!sp) {
+      const v = voiceEvidence(now);
+      if (v && v !== 'new' && !tracked.has(v)) sp = speakerById(v);
+    }
+    if (!sp && spk.list.length < CONFIG.maxSpeakers) sp = createSpeaker();
+    if (!sp) return null;
+    best.speaker = sp.id;
+  }
+  return best.speaker;
+}
+
+function updateFace(now) {
+  if (!face.landmarker || video.readyState < 2) return;
+  // 姿勢推定と同じフレームでは回さない（重くなるので交互に）
+  if (now - face.lastRun < CONFIG.faceInterval || now === body.lastRun) return;
+  face.lastRun = now;
+  const res = face.landmarker.detectForVideo(video, now);
+  const faces = res.faceLandmarks || [];
+  const blends = res.faceBlendshapes || [];
+  const used = new Set();
+  faces.forEach((lm, i) => {
+    const x = 1 - lm[1].x; // プレビューと同じく鏡像にする
+    const y = lm[1].y;
+    const cat = blends[i] && blends[i].categories.find((c) => c.categoryName === 'jawOpen');
+    const jaw = cat ? cat.score : 0;
+    let tr = null;
+    let bd = 0.15;
+    for (const t of face.tracks) {
+      const d = Math.hypot(t.x - x, t.y - y);
+      if (!used.has(t) && d < bd) {
+        bd = d;
+        tr = t;
+      }
+    }
+    if (!tr) {
+      tr = { x, y, jaw, act: 0, seen: now, speaker: null };
+      face.tracks.push(tr);
+    }
+    used.add(tr);
+    // 口の開き具合の変化の速さ＝しゃべっている度合い
+    const dtSec = Math.max(0.03, (now - tr.seen) / 1000);
+    const raw = clamp(Math.abs(jaw - tr.jaw) / dtSec / 3, 0, 1);
+    tr.act = lerp(tr.act, raw, raw > tr.act ? 0.5 : 0.15);
+    tr.x = x;
+    tr.y = y;
+    tr.jaw = jaw;
+    tr.seen = now;
+    const sp = tr.speaker && speakerById(tr.speaker);
+    if (sp) sp.side = x;
+  });
+  face.tracks = face.tracks.filter((t) => now - t.seen < 2000);
+}
+
+// 毎フレーム: 今しゃべっている話者を決める（すぐ切り替わらないように少し粘る）
+function updateSpeaker(now, dt) {
+  if (features.volume < 0.15) return;
+  let id = faceEvidence(now);
+  if (id === null) id = voiceEvidence(now);
+  if (id === null) return;
+  if (id === 'new') {
+    spk.unknownTime += dt;
+    // 初めての声はすぐ、2 人目以降は知らない声が少し続いたら新しい話者にする
+    if (spk.list.length === 0 || spk.unknownTime > CONFIG.newSpeakerMs) {
+      id = createSpeaker().id;
+      spk.unknownTime = 0;
+    } else return;
+  } else spk.unknownTime = 0;
+
+  if (spk.active === null) {
+    setActiveSpeaker(id, now);
+    return;
+  }
+  if (id === spk.active) {
+    spk.candTime = 0;
+    // 本人の声を少しずつ覚える
+    const sp = speakerById(id);
+    if (sp && voiceFresh(now)) {
+      sp.pitch = lerp(sp.pitch, voiceNow.pitch, 0.02);
+      sp.cent = lerp(sp.cent, voiceNow.cent, 0.02);
+    }
+    return;
+  }
+  if (spk.cand !== id) {
+    spk.cand = id;
+    spk.candTime = 0;
+  }
+  spk.candTime += dt;
+  if (spk.candTime > CONFIG.speakerSwitchMs) setActiveSpeaker(id, now);
+}
+
+function setActiveSpeaker(id, now) {
+  spk.active = id;
+  spk.cand = null;
+  spk.candTime = 0;
+  onSpeakerChange(now);
+}
+
+// キー操作で話者を指定（今の声をその話者として覚え直す）
+function forceSpeaker(n) {
+  while (spk.list.length < n) createSpeaker();
+  const sp = speakerById(n);
+  if (voiceNow.at) {
+    sp.pitch = voiceNow.pitch;
+    sp.cent = voiceNow.cent;
+  }
+  spk.active = n;
+  spk.cand = null;
+  // しゃべっている途中のページも付け替える（確定済みのページは前の人のものなので触らない）
+  if (liveCaption) liveCaption.speaker = n;
+  toast(`${sp.name} に設定しました`);
+}
+
+function resetSpeakers() {
+  spk.list.length = 0;
+  spk.active = null;
+  spk.cand = null;
+  for (const t of face.tracks) t.speaker = null;
+  for (const c of captions) c.speaker = null;
+  toast('話者をリセットしました');
 }
 
 /* =========================================================
@@ -368,6 +624,11 @@ const RE_HIRA = /^[ぁ-ゟー]+$/;
 const RE_KANJI_END = /[一-鿿々]$/;
 const RE_KANJI_START = /^[一-鿿々]/;
 const RE_SENT_END = /[。！？!?]$/;
+// 関西弁の文末・活用（前の単語にくっつける）
+const RE_KANSAI_END =
+  /^(やねん|ねん|やんか|やんな|やん|へん|ひん|へんで|まへん|やで|やわ|やな|やろ|やし|けど|けどな|さかい|がな|ねや|んや|んか|とる|とん|てん|たん|はる|よる|やんけ|じゃん|ちゃう)$/;
+// 強調の言葉（標準語・関西弁）。含む単語は大きくする
+const RE_INTENSIFIER = /めっちゃ|めっさ|むっちゃ|めちゃ|ごっつ|えらい|ほんま|ホンマ|すっご|超|クソ|くっそ|バリ|ばり/;
 const MAX_CHUNK = 8;
 
 const normalize = (text) => text.replace(/\s+/g, '');
@@ -393,6 +654,7 @@ function splitChunks(text) {
       prev.length + t.length <= MAX_CHUNK + 2 &&
       (!s.word || // 句読点・記号
         (RE_HIRA.test(t) && (t.length <= 2 || prev.length === 1)) || // 助詞・送り仮名
+        RE_KANSAI_END.test(t) || // 関西弁の文末
         (RE_KANJI_END.test(prev) && RE_KANJI_START.test(t) && prev.length + t.length <= 4)); // 切れすぎた熟語
     if (attach) out[out.length - 1] = prev + t;
     else out.push(t);
@@ -576,6 +838,7 @@ class Chunk {
     let s = 0.85 + this.roll.size * 0.3;
     if (this.category !== 'neutral') s *= 1.25;
     if (/[!！]/.test(this.text)) s *= 1.15;
+    if (RE_INTENSIFIER.test(this.text)) s *= 1.3;
     if (this.text.length <= 2) s *= 1.1;
     return s * (0.75 + this.vol * 0.7);
   }
@@ -620,12 +883,17 @@ class Caption {
     this.offRoll = [r() * 2 - 1, r() * 2 - 1];
     this.tilt = this.mode === 'rows' ? (r() - 0.5) * 0.05 : 0;
     this.exit = pickBy(EXITS, r());
+    this.speaker = spk.active;
+    this.dockedAt = 0;
+    this.dockX = 0;
+    this.dockY = 0;
+    this.dockS = 0;
     this.born = now;
     this.text = '';
     this.chunks = [];
     this.live = true;
     this.committedAt = 0;
-    this.state = 'main'; // main → leaving（閉じるアニメーション）→ 消える
+    this.state = 'main'; // main → docked（画面の端に小さく残る）→ leaving（閉じるアニメーション）→ 消える
     this.leftAt = 0;
     this.peak = features.recentPeak;
     this.finalI = 0;
@@ -683,8 +951,17 @@ class Caption {
     if (this.finalI > 0.65 || this.strength > 0.6) impact(this);
   }
 
-  leave(now) {
+  // 次のページが出るとき、今のページは画面の端に小さく寄せて残す
+  dock(now) {
     if (this.state !== 'main') return;
+    // 改ページで単語が減った直後でも正しい大きさで寄せられるよう、最後にもう一度組み直す
+    this.layout();
+    this.state = 'docked';
+    this.dockedAt = now;
+  }
+
+  leave(now) {
+    if (this.state === 'leaving') return;
     this.state = 'leaving';
     this.leftAt = now;
   }
@@ -707,6 +984,8 @@ class Caption {
 
   update(now) {
     if (this.live) {
+      // 話者: ページの出だしのうちは、今の話者に合わせて付け替える
+      if (spk.active && (!this.speaker || now - this.born < 1200)) this.speaker = spk.active;
       this.peak = Math.max(this.peak, features.recentPeak);
       if (features.volume > 0.1) {
         // 発話中の声の特徴を感情スコアとして蓄積
@@ -720,11 +999,17 @@ class Caption {
       const last = this.chunks[this.chunks.length - 1];
       if (last && this.volOverride === null) last.vol = Math.max(last.vol, features.intensity);
     } else if (this.state === 'main' && now - this.committedAt > CONFIG.captionLife) {
-      this.leave(now);
+      this.dock(now);
     }
 
     if (this.state === 'main') this.layout();
-    else if (now - this.leftAt > CONFIG.exitDur) this.dead = true;
+    else if (this.state === 'docked') {
+      // 画面の端へ滑らかに移動して小さくなる
+      this.cx = lerp(this.cx, this.dockX, 0.14);
+      this.cy = lerp(this.cy, this.dockY, 0.14);
+      this.scale = lerp(this.scale, this.dockS, 0.14);
+      if (now - this.dockedAt > CONFIG.dockTime) this.leave(now);
+    } else if (now - this.leftAt > CONFIG.exitDur) this.dead = true;
 
     // 単語を目標位置へ滑らかに動かす（行の組み替えもアニメーションになる）
     for (const k of this.chunks) {
@@ -740,10 +1025,11 @@ class Caption {
     }
   }
 
+  // 使える領域（端に寄せたページがあるときは、上の帯を空けておく）
   avail() {
     return {
       w: W * (this.bubble ? 0.8 : 0.95),
-      h: H * (this.bubble ? 0.76 : 0.92),
+      h: H * (this.bubble ? 0.74 : 0.86) - dockReserve,
       pad: this.bubble ? U * 0.35 : 0,
     };
   }
@@ -804,7 +1090,7 @@ class Caption {
     const spareX = Math.max(0, (A.w - (f.bw + A.pad * 2) * this.scale) / 2);
     const spareY = Math.max(0, (A.h - (f.bh + A.pad * 2) * this.scale) / 2);
     this.cx = lerp(this.cx, W / 2 + this.offRoll[0] * spareX, 0.2);
-    this.cy = lerp(this.cy, H / 2 + this.offRoll[1] * spareY, 0.2);
+    this.cy = lerp(this.cy, H / 2 + dockReserve / 2 + this.offRoll[1] * spareY, 0.2);
   }
 
   flow(items, limit, gap, cols) {
@@ -858,8 +1144,60 @@ const particles = [];
 const fx = { shake: 0, flashColor: '#000', flash: 0 };
 const cam = { punch: 0, rot: 0 };
 
+let dockReserve = 0; // 端に寄せたページのために空けておく上の帯の高さ(px)
+
+// ページが話者のどちら側か（-1: 左, 1: 右）。顔の位置が分かればその側、なければ話者番号で左右に振り分け
+function pageSide(c) {
+  const sp = c.speaker && speakerById(c.speaker);
+  if (sp && sp.side !== null) return sp.side < 0.5 ? -1 : 1;
+  if (sp) return sp.id % 2 ? -1 : 1;
+  return c.tailDir;
+}
+
+// 端に寄せたページの置き場所: 画面上部の、話者の側の角。同じ側に 2 つ以上あれば、端に来てから一定時間たった古い方から消す
+function arrangeDocks(now) {
+  const docked = captions.filter((c) => c.state === 'docked').sort((a, b) => b.dockedAt - a.dockedAt);
+  const count = { '-1': 0, 1: 0 };
+  const m = 16;
+  const cursor = { '-1': m + H * 0.03, 1: m + H * 0.03 }; // 同じ側のページは下に積む
+  let bottom = 0;
+  for (const c of docked) {
+    const side = pageSide(c);
+    const slot = count[side]++;
+    if (slot >= 1 && now - c.dockedAt > CONFIG.minDock) {
+      c.leave(now);
+      continue;
+    }
+    const A = c.avail();
+    const bw = c.bw + A.pad * 2;
+    const bh = c.bh + A.pad * 2;
+    // 面積で大きさを揃える（縦書きのページが極端に小さくならないように）
+    c.dockS = Math.min(Math.sqrt((W * H * CONFIG.dockArea) / (bw * bh)), (H * CONFIG.dockHeight) / bh, (W * 0.4) / bw);
+    const w = bw * c.dockS;
+    const h = bh * c.dockS;
+    c.dockX = side < 0 ? m + w / 2 : W - m - w / 2;
+    c.dockY = cursor[side] + h / 2;
+    cursor[side] += h + 8;
+    if (slot === 0) bottom = Math.max(bottom, c.dockY + h / 2 + 8);
+  }
+  dockReserve = lerp(dockReserve, bottom, 0.1);
+}
+
+// 話者が替わったら、今のページを閉じて新しい話者のページにする（ページの出だしなら付け替えるだけ）
+function onSpeakerChange(now) {
+  const c = liveCaption;
+  if (!c) return;
+  if (!c.chunks.length || now - c.born < 1200) {
+    c.speaker = spk.active;
+    return;
+  }
+  c.commit(now);
+  utter.start += c.text.length;
+  liveCaption = newCaption(now);
+}
+
 function newCaption(now) {
-  for (const c of captions) c.leave(now);
+  for (const c of captions) c.dock(now);
   const c = new Caption(now);
   c.volOverride = pendingVol;
   captions.push(c);
@@ -1523,12 +1861,12 @@ function drawCaption(c, now) {
   let ox = 0;
   let oy = 0;
   let es = 1;
-  let alpha = 1;
+  let alpha = c.state === 'main' ? 1 : 0.9;
 
   if (c.state === 'leaving') {
     // ページを閉じる動き（ページごとに違う）
     const q = clamp((now - c.leftAt) / CONFIG.exitDur, 0, 1);
-    alpha = 1 - q;
+    alpha *= 1 - q;
     switch (c.exit) {
       case 'pop':
         es = 1 - easeOutCubic(q) * 0.9;
@@ -1561,6 +1899,34 @@ function drawCaption(c, now) {
   c.alpha = alpha;
   for (const k of c.chunks) drawChunk(c, k, now, I);
   c.alpha = 1;
+  if (CONFIG.showSpeakers && c.speaker) drawSpeakerTag(c);
+  ctx.restore();
+}
+
+// 話者名の札（ページの左上か右上。端に寄せて小さくなっても読める大きさを保つ）
+function drawSpeakerTag(c) {
+  const sp = speakerById(c.speaker);
+  if (!sp) return;
+  const A = c.avail();
+  const hw = c.bubble ? (c.bw / 2) * 1.2 + A.pad : c.bw / 2;
+  const hh = c.bubble ? (c.bh / 2) * 1.2 + A.pad : c.bh / 2;
+  const side = pageSide(c);
+  const k = Math.max(1, (H * 0.032) / (U * 0.42 * c.scale));
+  ctx.save();
+  ctx.translate(side < 0 ? -hw * 0.8 : hw * 0.8, -hh * 0.92);
+  ctx.scale(k, k);
+  ctx.font = `${U * 0.3}px 'Dela Gothic One', ${CONFIG.fallbackFont}`;
+  const w = ctx.measureText(sp.name).width + U * 0.34;
+  const h = U * 0.42;
+  ctx.fillStyle = sp.color;
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = U * 0.04;
+  ctx.beginPath();
+  ctx.roundRect(-w / 2, -h / 2, w, h, h / 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#111';
+  ctx.fillText(sp.name, 0, U * 0.02);
   ctx.restore();
 }
 
@@ -1617,8 +1983,9 @@ function render(now, dt) {
     fx.shake *= 0.85;
   }
 
-  // 閉じていくページ → 今のページ の順に描く
-  for (const c of captions) if (c.state !== 'main') drawCaption(c, now);
+  // 閉じていくページ → 端に寄せたページ → 今のページ の順に描く
+  for (const c of captions) if (c.state === 'leaving') drawCaption(c, now);
+  for (const c of captions) if (c.state === 'docked') drawCaption(c, now);
   for (const c of captions) if (c.state === 'main') drawCaption(c, now);
   drawParticles(dt);
   ctx.restore();
@@ -1645,6 +2012,9 @@ function frame() {
 
   updateAudio();
   updateBody(now);
+  updateFace(now);
+  updateSpeaker(now, dt);
+  arrangeDocks(now);
 
   // 話速: 発話中の字幕の文字数 / 経過時間
   if (liveCaption && liveCaption.text) {
@@ -1700,6 +2070,9 @@ function updateHud(now) {
       .join('') +
     `<div class="row"><span class="label">感情</span><span style="color:${EMOTIONS[emo].color}">${EMOTIONS[emo].label}</span></div>` +
     `<div class="row"><span class="label">認識</span><span>${running ? '● 聞き取り中' : '停止'}</span></div>` +
+    `<div class="row"><span class="label">話者</span><span>${
+      spk.list.map((s) => `<span style="color:${s.color}">${s.id === spk.active ? '●' : ''}${s.name}(${Math.pow(2, s.pitch).toFixed(0)}Hz)</span>`).join(' ') || 'まだいません'
+    } / 顔 ${face.landmarker ? face.tracks.length : '-'}</span></div>` +
     (words ? `<div class="words">${words}</div>` : '');
 }
 
@@ -1765,6 +2138,20 @@ window.addEventListener('keydown', (e) => {
     case 'v':
     case 'V':
       if (body.landmarker) camView.hidden = !camView.hidden;
+      break;
+    case '1':
+    case '2':
+    case '3':
+    case '4':
+      forceSpeaker(Number(e.key));
+      break;
+    case 's':
+    case 'S':
+      CONFIG.showSpeakers = !CONFIG.showSpeakers;
+      break;
+    case 'r':
+    case 'R':
+      resetSpeakers();
       break;
     case 'Enter':
       e.preventDefault();
