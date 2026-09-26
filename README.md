@@ -68,7 +68,7 @@ python -m http.server 8000
 
 - 反応の感度: `CONFIG.dbFloor` / `CONFIG.dbCeil`（会場のマイクに合わせて `D` キーの dB 値を見ながら調整）
 - 文字の最大サイズ: `CONFIG.maxWordRatio`
-- 1 ページの長さ: `CONFIG.pageMaxChars` / `CONFIG.minFontRatio`
+- 1 ページの長さ: `CONFIG.pageMaxChars`（最大文字数）/ `CONFIG.minPageChars`（この文字数までは大きさを理由に改ページしない）/ `CONFIG.minFontRatio`
 - 縦書き・吹き出しの出やすさ: `CONFIG.columnsChance` / `CONFIG.verticalWordChance` / `CONFIG.bubbleChance`
 - 語彙・フォント・配色・絵文字: `lexicon.js` の `WORDS` / `KANJI` / `CATEGORIES` / `EMOJI`（方言・若者言葉は `KANSAI` / `DIALECTS` / `SLANG` / `EXTRA_EMOJI`）。CLDR の表を作り直すときは `node tools/build-emoji-ja.js`
 - ムードごとの動き: `script.js` の `MOOD_ENTRANCES` / `chunkEntrance` / `charEntrance` / `charIdle`

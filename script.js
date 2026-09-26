@@ -20,7 +20,8 @@ const CONFIG = {
   captionLife: 8000, // しゃべり終わってからページを表示し続ける時間(ms)
   exitDur: 380, // ページが閉じるアニメーションの長さ(ms)
   pageMaxChars: 16, // 1 ページ（吹き出し 1 つ）に入れる最大文字数
-  minFontRatio: 0.2, // 文字がこれより小さくなる（画面の高さ比）なら次のページへ送る
+  minFontRatio: 0.14, // 文字がこれより小さくなる（画面の高さ比）なら次のページへ送る（吹き出し・端の帯を除いた画面全体で判定）
+  minPageChars: 8, // この文字数までは、文字の大きさを理由に改ページしない（1 単語ずつの細切れを防ぐ）
   dbFloor: -58, // この音量(dBFS)以下は無音扱い
   dbCeil: -12, // この音量で最大
   charStagger: 14, // 1 文字ずつ出てくる間隔(ms)
@@ -30,11 +31,11 @@ const CONFIG = {
   verticalWordChance: 0.18, // 横書きのページの中で、単語だけ縦にする確率
   pitchMin: 80,
   pitchMax: 600,
-  faceInterval: 50, // 表情の認識の間隔(ms)。毎フレーム回すと描画が重くなる
+  faceInterval: 80, // 表情の認識の間隔(ms)。表情はそこまで速く変わらないので、描画を重くしないよう間引く
   faceGain: 1.6, // 表情の感度（大きいほど、少しの表情の変化でも反応する）
   faceMoodRate: 0.2, // 表情が会話の雰囲気（背景の色）に効く強さ
   dockTime: 6000, // 前のページを画面の端に残しておく時間(ms)
-  minDock: 1500, // 次のページに押し出されても、最低これだけは端に残す(ms)
+  minDock: 1200, // 次のページに押し出されても、最低これだけは端に残す(ms)
   dockArea: 0.04, // 端に寄せたページの大きさ（画面の面積比）
   dockHeight: 0.22, // 端に寄せたページの高さの上限（画面の高さ比）
   moodHalfLife: 25000, // 会話の雰囲気（背景の色）が前の話題を引きずる時間の目安(ms)
@@ -564,6 +565,33 @@ const RE_V_SMALL = /[ぁぃぅぇぉっゃゅょゎァィゥェォッャュョ�
 const EMOJI_FONT = `${U}px 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif`;
 const EMOJI_SIZE = 0.95; // 絵文字の幅（基準単位 U 比）
 
+// カラー絵文字は、描く大きさが変わるたびに画像を作り直すため非常に重い（大きいと 1 回 100ms 以上）。
+// 絵文字ごとに 1 回だけ固定サイズの画像に描いておき、以後はその画像を拡大縮小して貼る（GPU で処理されて軽い）
+const EMOJI_SPRITE_FONT = 256; // 画像に描くときの文字サイズ(px)
+const EMOJI_SPRITE = 320; // 画像の一辺(px)。絵文字がはみ出さないよう文字サイズより少し大きく
+const emojiSprites = new Map();
+
+function emojiSprite(emoji) {
+  let c = emojiSprites.get(emoji);
+  if (!c) {
+    c = document.createElement('canvas');
+    c.width = c.height = EMOJI_SPRITE;
+    const g = c.getContext('2d');
+    g.font = EMOJI_FONT.replace(`${U}px`, `${EMOJI_SPRITE_FONT}px`);
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(emoji, EMOJI_SPRITE / 2, EMOJI_SPRITE / 2);
+    emojiSprites.set(emoji, c);
+  }
+  return c;
+}
+
+// 今の座標系の原点を中心に、文字サイズ U 相当の大きさで絵文字を描く（fillText(emoji, 0, 0) の代わり）
+function drawEmoji(emoji) {
+  const d = (EMOJI_SPRITE * U) / EMOJI_SPRITE_FONT;
+  ctx.drawImage(emojiSprite(emoji), -d / 2, -d / 2, d, d);
+}
+
 class Chunk {
   constructor(cap, index, text, now) {
     this.cap = cap;
@@ -795,10 +823,12 @@ class Caption {
     if (n < 2) return 0;
     // 文の区切り（。！？）が途中にあれば、そこでページを閉じる
     for (let i = 0; i < n - 1; i++) if (RE_SENT_END.test(this.chunks[i].text)) return i + 1;
+    // 吹き出しの余白や端の帯で狭くなった面積で判定すると、ほぼ 1 単語ずつに細切れになるので、画面全体で判定する
     const fits = (m) => {
       const sub = this.chunks.slice(0, m);
       const chars = sub.reduce((a, k) => a + k.text.length, 0);
-      return chars <= CONFIG.pageMaxChars && this.bestFlow(sub).fit * U >= H * CONFIG.minFontRatio;
+      if (chars > CONFIG.pageMaxChars) return false;
+      return chars <= CONFIG.minPageChars || this.bestFlow(sub, true).fit * U >= H * CONFIG.minFontRatio;
     };
     if (fits(n)) return 0;
     for (let m = n - 1; m >= 1; m--) if (fits(m)) return m;
@@ -847,7 +877,8 @@ class Caption {
   }
 
   // 使える領域（端に寄せたページがあるときは、上の帯を空けておく）
-  avail() {
+  avail(full = false) {
+    if (full) return { w: W * 0.95, h: H * 0.92, pad: 0 };
     return {
       w: W * (this.bubble ? 0.8 : 0.95),
       h: H * (this.bubble ? 0.74 : 0.86) - dockReserve,
@@ -856,7 +887,7 @@ class Caption {
   }
 
   // 単語を行（縦書きなら列）に詰める組み方を何通りか試し、いちばん大きく表示できるものを返す
-  bestFlow(chunks) {
+  bestFlow(chunks, full = false) {
     const items = chunks.map((k) => {
       const b = k.box();
       const s = k.weight();
@@ -867,7 +898,7 @@ class Caption {
     const main = (it) => (cols ? it.h : it.w);
     const total = items.reduce((a, it) => a + main(it) + gap, 0);
     const biggest = Math.max(...items.map(main));
-    const A = this.avail();
+    const A = this.avail(full);
     const fitOf = (f) => Math.min(A.w / (f.bw + A.pad * 2), A.h / (f.bh + A.pad * 2));
     const N = 10;
     const flows = [];
@@ -974,17 +1005,18 @@ function pageSide(c) {
   return c.side;
 }
 
-// 端に寄せたページの置き場所: 画面上部の左右の角。同じ側に 2 つ以上あれば、端に来てから一定時間たった古い方から消す
+// 端に寄せたページの置き場所: 画面上部の左右の角に 1 枚ずつ。
+// 同じ側に新しいページが来たら古い方は閉じる（端に来てから minDock たっていれば。2 枚を超える分はすぐ閉じる）
 function arrangeDocks(now) {
   const docked = captions.filter((c) => c.state === 'docked').sort((a, b) => b.dockedAt - a.dockedAt);
   const count = { '-1': 0, 1: 0 };
   const m = 16;
-  const cursor = { '-1': m + H * 0.03, 1: m + H * 0.03 }; // 同じ側のページは下に積む
+  const cursor = { '-1': m + H * 0.03, 1: m + H * 0.03 };
   let bottom = 0;
   for (const c of docked) {
     const side = pageSide(c);
     const slot = count[side]++;
-    if (slot >= 1 && now - c.dockedAt > CONFIG.minDock) {
+    if (slot >= 2 || (slot >= 1 && now - c.dockedAt > CONFIG.minDock)) {
       c.leave(now);
       continue;
     }
@@ -992,7 +1024,8 @@ function arrangeDocks(now) {
     const bw = c.bw + A.pad * 2;
     const bh = c.bh + A.pad * 2;
     // 面積で大きさを揃える（縦書きのページが極端に小さくならないように）
-    c.dockS = Math.min(Math.sqrt((W * H * CONFIG.dockArea) / (bw * bh)), (H * CONFIG.dockHeight) / bh, (W * 0.4) / bw);
+    // 文字が大きくなりすぎないよう、1 文字の高さも画面の 8% までに抑える
+    c.dockS = Math.min(Math.sqrt((W * H * CONFIG.dockArea) / (bw * bh)), (H * CONFIG.dockHeight) / bh, (W * 0.4) / bw, (H * 0.08) / U);
     const w = bw * c.dockS;
     const h = bh * c.dockS;
     c.dockX = side < 0 ? m + w / 2 : W - m - w / 2;
@@ -1252,9 +1285,6 @@ function addTopic(emoji, now) {
 function drawTopics(now, dt) {
   if (!CONFIG.showTopics) return;
   ctx.save();
-  ctx.font = EMOJI_FONT;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
   for (let i = topics.length - 1; i >= 0; i--) {
     const t = topics[i];
     const fade = 1 - (now - t.last) / CONFIG.topicLife;
@@ -1274,7 +1304,7 @@ function drawTopics(now, dt) {
     ctx.translate(x, y);
     ctx.rotate(Math.sin(now / 7000 + t.phase) * 0.12);
     ctx.scale(size / U, size / U);
-    ctx.fillText(t.emoji, 0, 0);
+    drawEmoji(t.emoji);
     ctx.restore();
   }
   ctx.restore();
@@ -1367,10 +1397,7 @@ function drawSummary(now) {
     ctx.translate(W / 2, H / 2 + dockReserve / 2);
     ctx.rotate(Math.sin(now / 6000) * 0.05);
     ctx.scale(size / U, size / U);
-    ctx.font = EMOJI_FONT;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(emoji, 0, 0);
+    drawEmoji(emoji);
     ctx.restore();
   };
   draw(summary.prev, 1 - q, 1 + q * 0.15);
@@ -1549,6 +1576,10 @@ function drawBubble(c, now) {
 function glyph(k, ch, simple) {
   const [c1, c2] = k.palette;
   if (simple) {
+    // 端に寄せたページ・閉じていくページは、黒フチ＋塗りだけの軽い描き方（1 文字 2 回の描画で済ませる）
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 24;
+    ctx.strokeText(ch, 0, 0);
     ctx.fillStyle = c1;
     ctx.fillText(ch, 0, 0);
     return;
@@ -1833,7 +1864,7 @@ function drawChunk(c, k, now, I) {
     if (rot) ctx.rotate(rot);
     const sc = ce.s * id.s;
     if (sc !== 1) ctx.scale(sc, sc);
-    glyph(k, ce.ch || ch.ch, false);
+    glyph(k, ce.ch || ch.ch, c.state !== 'main');
     ctx.restore();
   });
 
@@ -1846,8 +1877,7 @@ function drawChunk(c, k, now, I) {
     ctx.translate(k.ex, k.ey + Math.sin(now / 350 + k.phase) * U * 0.06);
     ctx.rotate(Math.sin(now / 500 + k.phase) * 0.15);
     ctx.scale(es, es);
-    ctx.font = EMOJI_FONT;
-    ctx.fillText(k.emoji, 0, U * 0.05);
+    drawEmoji(k.emoji);
     ctx.restore();
   }
   ctx.restore();
@@ -1855,6 +1885,9 @@ function drawChunk(c, k, now, I) {
 
 function drawCaption(c, now) {
   if (!c.chunks.length || c.alpha < 0.01 || !c.scale) return;
+  // 画面の外にあるページは描かない
+  const r = (Math.max(c.bw, c.bh) / 2 + U) * c.scale * 1.6;
+  if (c.cx + r < 0 || c.cx - r > W || c.cy + r < 0 || c.cy - r > H) return;
   const I = c.live ? features.intensity : c.finalI;
   let ox = 0;
   let oy = 0;
