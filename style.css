@@ -132,14 +132,43 @@ kbd {
   pointer-events: none;
 }
 
+/* =========================================================
+ * 画面に重ねる UI（カメラ・解析値・会話の履歴・トースト・手入力）
+ *   字幕と同じ「テレビのテロップ・漫画の吹き出し」の見た目にそろえる:
+ *   白い地・太い黒フチ・ずらした黒い影・丸ゴシックの太字・見出しは Dela Gothic One
+ * ========================================================= */
+:root {
+  --ink: #111;
+  --paper: #fff;
+  --pop-yellow: #ffd23f;
+  --pop-pink: #ff4d8d;
+  --pop-cyan: #3fe0ff;
+  --ui-font: 'M PLUS Rounded 1c', 'Hiragino Maru Gothic ProN', 'Yu Gothic', 'Meiryo', sans-serif;
+  --title-font: 'Dela Gothic One', 'M PLUS Rounded 1c', sans-serif;
+}
+
+/* 見出しのステッカー（「こえ」「さっきの話」など） */
+.sticker {
+  display: inline-block;
+  padding: 2px 12px;
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  background: var(--pop-yellow);
+  color: var(--ink);
+  font: 400 15px/1.4 var(--title-font);
+  box-shadow: 3px 3px 0 var(--ink);
+  transform: rotate(-2deg);
+}
+
 #camView {
   position: fixed;
   right: 16px;
   bottom: 24px;
   width: 240px;
-  border-radius: 8px;
-  border: 1px solid #333;
-  opacity: 0.8;
+  border-radius: 18px;
+  border: 4px solid var(--ink);
+  box-shadow: 6px 6px 0 var(--ink);
+  background: var(--paper);
   z-index: 5;
   pointer-events: none;
 }
@@ -148,17 +177,22 @@ kbd {
   display: none;
 }
 
-/* ---------- 解析値表示 ---------- */
+/* ---------- 解析値表示（D キー） ---------- */
 #hud {
   position: fixed;
-  top: 12px;
-  left: 12px;
-  padding: 10px 14px;
-  min-width: 260px;
-  background: rgba(0, 0, 0, 0.6);
-  border: 1px solid #333;
-  border-radius: 8px;
-  font: 13px/1.6 monospace;
+  top: 14px;
+  left: 14px;
+  width: 340px;
+  max-height: calc(100vh - 28px);
+  overflow: hidden;
+  padding: 10px 14px 12px;
+  background: var(--paper);
+  color: var(--ink);
+  border: 4px solid var(--ink);
+  border-radius: 22px;
+  box-shadow: 7px 7px 0 var(--ink);
+  font: 800 13px/1.5 var(--ui-font);
+  font-variant-numeric: tabular-nums;
   z-index: 5;
   pointer-events: none;
 }
@@ -167,45 +201,61 @@ kbd {
   display: none;
 }
 
+#hud .sticker {
+  margin: 8px 0 4px;
+}
+
+#hud .sticker:first-child {
+  margin-top: 0;
+}
+
 #hud .row {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 22px;
 }
 
 #hud .label {
-  width: 84px;
-  opacity: 0.7;
+  width: 72px;
+  flex: none;
 }
 
 #hud .bar {
   flex: 1;
-  height: 6px;
-  background: #222;
-  border-radius: 3px;
+  height: 12px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: #eee;
   overflow: hidden;
 }
 
 #hud .bar > i {
   display: block;
   height: 100%;
-  background: #3fe0ff;
+  border-right: 2px solid var(--ink);
 }
 
 #hud .val {
   width: 64px;
+  flex: none;
   text-align: right;
+}
+
+#hud .chip {
+  padding: 0 10px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
 }
 
 #hud .words {
   margin-top: 6px;
-  max-width: 420px;
-  line-height: 1.5;
+  line-height: 1.6;
   word-break: break-all;
 }
 
 #hud .words small {
-  opacity: 0.6;
+  opacity: 0.55;
   font-size: 11px;
   margin-right: 4px;
 }
@@ -226,12 +276,13 @@ kbd {
 
 #textInput {
   width: 100%;
-  padding: 12px 18px;
-  font-size: 20px;
-  border: 2px solid #ffd23f;
+  padding: 12px 22px;
+  font: 800 22px var(--ui-font);
+  border: 4px solid var(--ink);
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.8);
-  color: #fff;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 6px 6px 0 var(--ink);
   outline: none;
 }
 
@@ -239,12 +290,15 @@ kbd {
 #toast {
   position: fixed;
   left: 50%;
-  top: 16px;
-  transform: translateX(-50%);
-  padding: 8px 18px;
+  top: 18px;
+  transform: translateX(-50%) rotate(-1.5deg);
+  padding: 6px 22px;
+  border: 4px solid var(--ink);
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.75);
-  font-size: 14px;
+  background: var(--pop-yellow);
+  color: var(--ink);
+  box-shadow: 5px 5px 0 var(--ink);
+  font: 400 18px/1.4 var(--title-font);
   opacity: 0;
   transition: opacity 0.3s;
   pointer-events: none;
@@ -255,17 +309,18 @@ kbd {
   opacity: 1;
 }
 
-/* ---------- 右上の会話の履歴 ---------- */
+/* ---------- 右上の会話の履歴（L キー）: 漫画の吹き出しを並べる ---------- */
 #log {
   position: fixed;
-  top: 12px;
-  right: 12px;
+  top: 14px;
+  right: 18px;
   width: 26vw;
-  max-height: calc(100vh - 24px);
+  max-height: calc(100vh - 28px);
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  gap: 6px;
+  align-items: flex-end;
+  justify-content: flex-end; /* あふれたら古い発言（上）から見えなくなる */
+  gap: 14px;
   overflow: hidden;
   z-index: 4;
   pointer-events: none;
@@ -275,18 +330,47 @@ kbd {
   display: none;
 }
 
+#log .sticker {
+  align-self: flex-start;
+  font-size: clamp(14px, 1.2vw, 22px);
+}
+
 .log-item {
-  padding: 6px 12px;
-  background: rgba(10, 10, 18, 0.72);
-  border-left: 6px solid #fff;
-  border-radius: 8px;
-  font: 700 clamp(16px, 1.5vw, 28px) / 1.45 'Hiragino Sans', 'Yu Gothic', 'Meiryo', sans-serif;
-  color: #fff;
+  --fill: #fff;
+  --line: #111;
+  position: relative;
+  max-width: 100%;
+  padding: 6px 16px;
+  background: var(--fill);
+  color: var(--text, #111);
+  border: 4px solid var(--line);
+  border-radius: 20px;
+  box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.55);
+  font: 900 clamp(16px, 1.5vw, 28px) / 1.45 var(--ui-font);
   word-break: break-all;
+  transform: rotate(0.6deg);
   transition: opacity 0.5s;
 }
 
-/* 最新の発言をいちばん目立たせる */
-.log-item:last-child {
-  background: rgba(10, 10, 18, 0.85);
+.log-item:nth-child(odd) {
+  transform: rotate(-0.6deg);
+}
+
+/* 吹き出しのしっぽ（右下） */
+.log-item::after {
+  content: '';
+  position: absolute;
+  right: 22px;
+  bottom: -14px;
+  width: 16px;
+  height: 16px;
+  background: var(--fill);
+  border-right: 4px solid var(--line);
+  border-bottom: 4px solid var(--line);
+  transform: skewX(35deg) rotate(45deg);
+}
+
+/* 古い発言は少し小さく、最新の発言をいちばん目立たせる */
+.log-item:not(:last-child) {
+  font-size: clamp(14px, 1.25vw, 23px);
 }

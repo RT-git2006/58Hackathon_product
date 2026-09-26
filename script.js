@@ -107,6 +107,11 @@ function hexToRgb(hex) {
   const n = parseInt(hex.slice(1), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
+// 暗い色か（上に乗せる文字を白にするか黒にするか）
+function isDark(hex) {
+  const [r, g, b] = hexToRgb(hex);
+  return r * 0.299 + g * 0.587 + b * 0.114 < 140;
+}
 
 // ---------- DOM ----------
 const canvas = document.getElementById('stage');
@@ -1100,7 +1105,11 @@ function addLog(c) {
   item.text += text;
   item.last = now;
   item.el.textContent = item.text;
-  item.el.style.borderColor = EMOTIONS[c.emotion].color;
+  // 吹き出しの色は、字幕の吹き出しと同じく感情で決める
+  const e = EMOTIONS[c.emotion];
+  item.el.style.setProperty('--fill', e.fill);
+  item.el.style.setProperty('--line', e.line);
+  item.el.style.setProperty('--text', isDark(e.fill) ? '#fff' : '#111');
   while (logItems.length > CONFIG.logMax) logItems.shift().el.remove();
 }
 
@@ -2147,39 +2156,36 @@ function updateHud(now) {
   const emo = currentEmotion();
   const main = captions.find((c) => c.state === 'main');
   const words = main ? main.chunks.map((k) => `${k.text}${k.emoji}<small>(${CATEGORIES[k.category].label}/${k.entrance}/${k.family})</small>`).join(' ') : '';
-  const rows = [
-    ['音量', features.volume, `${features.db.toFixed(0)}dB`],
-    ['ピッチ', features.pitchExcite, `${features.pitch.toFixed(0)}Hz`],
-    ['基準ピッチ', null, `${features.pitchBase.toFixed(0)}Hz`],
-    ['話速', features.rateNorm, `${features.rate.toFixed(1)}字/s`],
-    ['頭の動き', features.motion, features.faceDetected ? features.motion.toFixed(2) : '顔なし'],
-    ...Object.entries(features.expr).map(([k, v]) => [EXPRESSION_LABEL[k], v, v.toFixed(2)]),
-    ['強さ', features.intensity, features.intensity.toFixed(2)],
-  ];
-  const look = main ? `<div class="row"><span class="label">見せ方</span><span>${main.lookLabel}</span></div>` : '';
+  const sticker = (t) => `<div class="sticker">${t}</div>`;
+  const bar = (label, v, text, color) =>
+    `<div class="row"><span class="label">${label}</span><span class="bar">${
+      v === null ? '' : `<i style="width:${(v * 100).toFixed(0)}%;background:${color}"></i>`
+    }</span><span class="val">${text}</span></div>`;
+  const row = (label, html) => `<div class="row"><span class="label">${label}</span><span>${html}</span></div>`;
+  const chip = (text, color) => `<span class="chip" style="background:${color};color:${isDark(color) ? '#fff' : '#111'}">${text}</span>`;
+  const f = features;
+  const hasFace = f.faceDetected;
   hud.innerHTML =
-    rows
-      .map(
-        ([label, v, text]) =>
-          `<div class="row"><span class="label">${label}</span><span class="bar">${
-            v === null ? '' : `<i style="width:${(v * 100).toFixed(0)}%"></i>`
-          }</span><span class="val">${text}</span></div>`,
-      )
+    sticker('こえ') +
+    bar('音量', f.volume, `${f.db.toFixed(0)}dB`, '#3fe0ff') +
+    bar('声の高さ', f.pitchExcite, `${f.pitch.toFixed(0)}Hz`, '#ffd23f') +
+    bar('話す速さ', f.rateNorm, `${f.rate.toFixed(1)}字/s`, '#7dff6a') +
+    bar('強さ', f.intensity, f.intensity.toFixed(2), '#ff4d8d') +
+    sticker('かお') +
+    row('今の表情', hasFace ? chip(EXPRESSION_LABEL[currentExpression()], EMOTIONS[currentExpression()].color) : '顔なし') +
+    Object.entries(f.expr)
+      .map(([k, v]) => bar(EXPRESSION_LABEL[k], v, v.toFixed(2), EMOTIONS[k].glow))
       .join('') +
-    `<div class="row"><span class="label">感情</span><span style="color:${EMOTIONS[emo].color}">${EMOTIONS[emo].label}</span></div>` +
-    look +
-    `<div class="row"><span class="label">おだやか</span><span>${CONFIG.calm ? 'ON' : 'OFF'}</span></div>` +
-    `<div class="row"><span class="label">認識</span><span>${running ? '● 聞き取り中' : '停止'}</span></div>` +
-    `<div class="row"><span class="label">表情</span><span>${features.faceDetected ? EXPRESSION_LABEL[currentExpression()] : '顔なし'}</span></div>` +
-    `<div class="row"><span class="label">雰囲気</span><span style="color:${MOODS[atmosphere.mood].colors[0]}">${MOODS[atmosphere.mood].label}</span>` +
-    `<span style="opacity:0.6">&nbsp;${Object.entries(atmosphere.score)
-      .filter(([, v]) => v > 0.05)
-      .map(([k, v]) => `${MOODS[k].label}${v.toFixed(1)}`)
-      .join(' ')}</span></div>` +
-    `<div class="row"><span class="label">要約</span><span>${summary.cur || 'なし'}</span></div>` +
-    `<div class="row"><span class="label">話題</span><span>${
-      [...topics].sort((a, b) => b.weight - a.weight).map((t) => `${t.emoji}${t.weight}`).join(' ') || 'なし'
-    }</span></div>` +
+    bar('頭の動き', f.motion, hasFace ? f.motion.toFixed(2) : '—', '#b98cff') +
+    sticker('見せ方') +
+    row('感情', chip(EMOTIONS[emo].label, EMOTIONS[emo].color)) +
+    (main ? row('ページ', main.lookLabel) : '') +
+    row('雰囲気', chip(MOODS[atmosphere.mood].label, MOODS[atmosphere.mood].colors[0])) +
+    row('要約', summary.cur || 'なし') +
+    row('話題', [...topics].sort((a, b) => b.weight - a.weight).map((t) => t.emoji).join(' ') || 'なし') +
+    sticker('ようす') +
+    row('認識', running ? '● 聞き取り中' : '停止') +
+    row('おだやか', CONFIG.calm ? 'ON' : 'OFF') +
     (words ? `<div class="words">${words}</div>` : '');
 }
 
