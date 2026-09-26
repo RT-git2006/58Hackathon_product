@@ -26,8 +26,7 @@ const CONFIG = {
   dbCeil: -12, // この音量で最大
   charStagger: 14, // 1 文字ずつ出てくる間隔(ms)
   enterDur: 280, // 単語の登場アニメーションの長さ(ms)
-  bubbleChance: 0.5, // ページに吹き出しを付ける確率
-  columnsChance: 0.4, // 縦書きにしてよいページのうち、実際に縦書きにする確率
+  bubbleMinI: 0.55, // 声の強さがこれを超えたページには、必ず吹き出しを付ける（高ぶりを形で見せる）
   verticalWordChance: 0.18, // 横書きのページの中で、単語だけ縦にする確率（短いページだけ）
   columnsMaxChars: 8, // 縦書き（ページ全体・単語だけ）を選択肢に入れるのは、ページがこの文字数以下のときだけ
   columnsMinFont: 0.16, // 縦書きにしても、1 文字の高さが画面の高さのこの割合以上で出せるときだけ縦書きにする
@@ -43,6 +42,7 @@ const CONFIG = {
   summaryHalfLife: 20000, // 中央の要約の絵文字が、前の話題を引きずる時間の目安(ms)
   summaryAlpha: 0.13, // 中央の要約の絵文字の濃さ
   showTopics: true, // 会話に出た話題の絵文字を背景に表示する（T キーで切替）
+  calm: false, // おだやかモード（O キーで切替）。揺れ・フラッシュ・紙吹雪・集中線を止め、動きを静かにする
   showLog: false, // 右上の会話の履歴を表示する（L キーで切替）。認識の間違いが目立たないよう、最初は隠しておく
   topicLife: 30000, // 話題の絵文字が、最後に話に出てから消えるまで(ms)。だんだん薄くなって消える
   topicMax: 14, // 背景に出す話題の数の上限
@@ -552,8 +552,29 @@ const ENTRANCE_STAGGER = { typewriter: 55, scramble: 45, wipe: 30, drip: 60, jum
 // 文字ごとに動く登場アニメーション
 const CHAR_ENTRANCES = new Set(['jump', 'waveIn', 'drip', 'typewriter', 'wipe', 'scramble', 'glitchIn']);
 const SCRAMBLE_POOL = 'アイウエオカキクケコサシスセソ01#$%&@*?';
-// 吹き出しが閉じるときの動き
-const EXITS = ['pop', 'up', 'fade', 'zoomOut', 'slide'];
+/* ページの見せ方は、乱数ではなくページの気持ち（ムード）で決める。
+ *   縦書き: 怖い・悲しい・シリアス（和風のテロップのように、重さ・静けさを縦の流れで見せる）
+ *   吹き出し: 驚き・怒り・楽しい、または声や感情が強いとき（高ぶりを形で見せる）。平常・クール・怖い・悲しいは吹き出しなしのテロップ
+ *   行の組み方: 楽しい・驚きは行ごとに左右に振る（弾むリズム）。ほかはそろえる
+ *   閉じ方: 下の EXIT_OF */
+const COLUMN_MOODS = new Set(['fear', 'sad', 'cool']);
+const BUBBLE_MOODS = new Set(['surprise', 'angry', 'happy']);
+const ZIGZAG_MOODS = new Set(['happy', 'surprise']);
+const EXIT_OF = {
+  happy: 'zoomOut', // 楽しい: 大きくなって弾ける
+  surprise: 'up', // 驚き: 上へ飛んでいく
+  angry: 'pop', // 怒り: ギュッと縮んで消える
+  sad: 'sink', // 悲しい: 下へ沈む
+  fear: 'fade', // 怖い: 闇に溶ける
+  cool: 'slide', // クール: 横へスッと抜ける
+  calm: 'fade', // 平常: 静かに消える
+};
+// ページの中で同じくらい出てきたムードは、この順で優先する（強い気持ちほど前）
+const MOOD_PRIORITY = ['angry', 'fear', 'sad', 'happy', 'surprise', 'cool'];
+const MOOD_LABEL = { happy: '楽しい', surprise: '驚き', angry: '怒り', sad: '悲しい', fear: '怖い', cool: 'シリアス', calm: '平常' };
+const EXIT_LABEL = { zoomOut: '拡大して弾ける', up: '上へ飛ぶ', pop: '縮んで消える', sink: '沈む', fade: 'フェード', slide: 'スライド' };
+// おだやかモードの登場（ふわっと出るだけ）
+const CALM_ENTRANCES = ['fadeUp', 'fadeDown'];
 
 /* =========================================================
  * 字幕: 単語（Chunk）とページ（Caption）
@@ -614,7 +635,7 @@ class Chunk {
     this.s = 1;
     // 登場の動きは最初の単語の内容で決める（途中で認識が書き換わっても変えない）
     const mood = this.moodFor(classifyChunk(text));
-    const list = MOOD_ENTRANCES[mood];
+    const list = CONFIG.calm ? CALM_ENTRANCES : MOOD_ENTRANCES[mood];
     const prev = cap.chunks[index - 1];
     let e = pickBy(list, this.roll.enter);
     if (prev && prev.entrance === e) e = list[(list.indexOf(e) + 1) % list.length];
@@ -731,15 +752,14 @@ class Caption {
   constructor(now) {
     this.seed = Math.floor(Math.random() * 1e9);
     const r = mulberry32(this.seed);
-    this.wantColumns = r() < CONFIG.columnsChance; // 条件を満たせば縦書きにしたいページ
+    this.look = 'calm'; // ページの気持ち（ムード）。縦書き・吹き出し・閉じ方をこれで決める（decideLook）
+    this.lookFixed = false; // ページが確定したら、ページの気持ちも固定する
     this.mode = 'rows'; // 実際の組み方（chooseMode で決める）
     this.vwords = false; // 横書きの中で単語だけ縦にしてよいか
-    this.zigzag = r() < 0.5; // 行（列）ごとに左右（上下）に寄せる
-    this.bubble = r() < CONFIG.bubbleChance;
+    this.bubble = false; // 一度付いた吹き出しは外さない
     this.tailDir = r() < 0.5 ? -1 : 1;
     this.offRoll = [r() * 2 - 1, r() * 2 - 1];
     this.tiltRoll = (r() - 0.5) * 0.05;
-    this.exit = pickBy(EXITS, r());
     this.born = now;
     this.text = '';
     this.chunks = [];
@@ -748,6 +768,7 @@ class Caption {
     this.state = 'main'; // main → leaving（閉じるアニメーション）→ 消える。内容は右上の会話の履歴に残る
     this.leftAt = 0;
     this.peak = features.recentPeak;
+    this.loud = pendingVol ?? 0; // このページの間に出た声の強さの最大（前のページの大声を引き継がない。吹き出しの判定に使う）
     this.finalI = 0;
     this.volOverride = null;
     this.prosody = { joy: 0, surprise: 0, fear: 0, anger: 0, sad: 0 };
@@ -775,7 +796,6 @@ class Caption {
       }
     }
     this.chunks.length = parts.length;
-    this.chooseMode();
     // 隣り合う単語が同じ配色にならないようにする
     for (let i = 1; i < this.chunks.length; i++) {
       const a = this.chunks[i - 1];
@@ -792,6 +812,45 @@ class Caption {
     const emo = pickEmotion(this.kw, this.prosody);
     this.emotion = emo.type;
     this.strength = emo.strength;
+    this.decideLook();
+    this.chooseMode();
+  }
+
+  // ページの気持ち（ムード）を決める。内容のある単語のムードでいちばん多いもの（同数なら強い気持ちを優先）。
+  // 内容のある単語が無ければ、声と表情も含めた発話全体の感情のムード
+  decideLook(final = false) {
+    if (!this.lookFixed) {
+      const count = {};
+      for (const k of this.chunks) {
+        const m = MOOD_OF[k.category];
+        if (k.category !== 'neutral' && m !== 'calm') count[m] = (count[m] || 0) + 1;
+      }
+      let best = null;
+      for (const m of MOOD_PRIORITY) if (count[m] && (!best || count[m] > count[best])) best = m;
+      this.look = best || EMO_MOOD[this.emotion] || 'calm';
+      if (final) this.lookFixed = true;
+    }
+    // 吹き出し: 高ぶる気持ちのページ、または声が強いページ（一度付いたら外さない）
+    if (BUBBLE_MOODS.has(this.look) || this.loud >= CONFIG.bubbleMinI) this.bubble = true;
+  }
+
+  get wantColumns() {
+    return COLUMN_MOODS.has(this.look);
+  }
+
+  get zigzag() {
+    return ZIGZAG_MOODS.has(this.look);
+  }
+
+  get exit() {
+    return CONFIG.calm ? 'fade' : EXIT_OF[this.look];
+  }
+
+  // 解析値表示（D キー）用の説明
+  get lookLabel() {
+    const shape = this.bubble ? `吹き出し(${EMOTIONS[this.emotion].bubble})` : '吹き出しなし';
+    const dir = this.mode === 'columns' ? '縦書き' : this.vwords ? '横書き+縦の単語' : '横書き';
+    return `${MOOD_LABEL[this.look]} → ${dir} / ${shape} / ${EXIT_LABEL[this.exit]}`;
   }
 
   commit(now) {
@@ -801,6 +860,7 @@ class Caption {
     const emo = pickEmotion(this.kw, this.prosody);
     this.emotion = emo.type;
     this.strength = emo.strength;
+    this.decideLook(true);
     if (this.finalI > 0.65 || this.strength > 0.6) impact(this);
     // 確定したページのキーワードの絵文字を、背景の「話題」に加え、会話の雰囲気にも反映する
     for (const k of this.chunks) if (k.emoji) addTopic(k.emoji, now);
@@ -828,7 +888,7 @@ class Caption {
     if (short && this.chunks.length) {
       const big = (fit) => fit * U >= H * CONFIG.columnsMinFont;
       if (this.wantColumns && big(fitOf('columns', false))) mode = 'columns';
-      else if (big(fitOf('rows', true))) vwords = true;
+      else if (this.wantColumns && big(fitOf('rows', true))) vwords = true;
     }
     this.mode = mode;
     this.vwords = vwords;
@@ -863,6 +923,7 @@ class Caption {
   update(now) {
     if (this.live) {
       this.peak = Math.max(this.peak, features.recentPeak);
+      this.loud = Math.max(this.loud, features.intensity);
       if (features.volume > 0.1) {
         // 発話中の声の特徴を感情スコアとして蓄積
         const p = prosodyScores(features);
@@ -871,6 +932,7 @@ class Caption {
       const emo = pickEmotion(this.kw, this.prosody);
       this.emotion = emo.type;
       this.strength = emo.strength;
+      if (!this.bubble) this.decideLook();
       // 今しゃべっている単語は、声の大きさに合わせて育つ
       const last = this.chunks[this.chunks.length - 1];
       if (last && this.volOverride === null) last.vol = Math.max(last.vol, features.intensity);
@@ -1067,12 +1129,13 @@ function newCaption(now) {
   c.utter = utterCount;
   c.volOverride = pendingVol;
   captions.push(c);
-  cam.punch += 0.03;
+  if (!CONFIG.calm) cam.punch += 0.03;
   return c;
 }
 
 // 単語が増えるたびに画面が少し寄る
 function onNewChunk() {
+  if (CONFIG.calm) return;
   const I = features.intensity;
   cam.punch += 0.01 + I * 0.03;
   if (I > 0.7) fx.shake = Math.max(fx.shake, I * 6);
@@ -1080,6 +1143,7 @@ function onNewChunk() {
 
 // 大きな声・強い感情で確定したときの演出（控えめに）
 function impact(c) {
+  if (CONFIG.calm) return;
   const emo = EMOTIONS[c.emotion];
   fx.shake = Math.max(fx.shake, 4 + c.finalI * 10);
   fx.flash = Math.max(fx.flash, 0.06 + 0.12 * c.finalI);
@@ -1462,7 +1526,7 @@ function drawBackground(now, emotion, I, dt) {
   drawTopics(now, dt);
 
   // 集中線（驚き・怒りで強く叫んだときだけ）
-  const want = (emotion === 'surprise' || emotion === 'anger') && I > 0.55 ? (I - 0.55) * 2.2 : 0;
+  const want = !CONFIG.calm && (emotion === 'surprise' || emotion === 'anger') && I > 0.55 ? (I - 0.55) * 2.2 : 0;
   bgState.speed = lerp(bgState.speed, want, 0.08);
   if (bgState.speed > 0.03) {
     if (now - speedLinesAt > 90) {
@@ -1624,7 +1688,7 @@ function glyph(k, ch, simple) {
   ctx.lineWidth = 32;
   ctx.strokeText(ch, 6, 8);
 
-  switch (k.style) {
+  switch (CONFIG.calm && k.style === 'horror' ? 'solid' : k.style) {
     case 'telop': // グラデ文字＋白フチ＋黒フチ
       ctx.strokeStyle = '#111';
       ctx.lineWidth = 30;
@@ -1816,6 +1880,8 @@ function charEntrance(k, ct, sad) {
   return o;
 }
 
+const NO_IDLE = { x: 0, y: 0, r: 0, s: 1 };
+
 // 登場後もムードに合わせて動き続ける
 function charIdle(mood, now, t, i, str, I) {
   const o = { x: 0, y: 0, r: 0, s: 1 };
@@ -1859,7 +1925,7 @@ function drawChunk(c, k, now, I) {
 
   const en = chunkEntrance(k, p, toUnit);
   // 単語全体のゆるい浮遊（クールな単語はほぼ動かさない）
-  const amp = mood === 'cool' ? 0.2 : 0.5 + I * 0.8 + features.motion * 0.8;
+  const amp = CONFIG.calm ? 0.15 : mood === 'cool' ? 0.2 : 0.5 + I * 0.8 + features.motion * 0.8;
   const floatY = Math.sin(t * 1.6 + k.phase) * U * 0.03 * amp;
   const floatR = Math.sin(t * 1.2 + k.phase) * 0.015 * amp;
   const isLast = c.live && k === c.chunks[c.chunks.length - 1];
@@ -1879,7 +1945,7 @@ function drawChunk(c, k, now, I) {
     const ct = (now - ch.born) / 1000;
     if (ct < 0) return;
     const ce = charEntrance(k, ct, sad);
-    const id = charIdle(mood, now, t, i, c.strength, I);
+    const id = CONFIG.calm ? NO_IDLE : charIdle(mood, now, t, i, c.strength, I);
     let rot = ce.r + id.r;
     ctx.save();
     ctx.globalAlpha = baseAlpha * ce.a;
@@ -1941,6 +2007,10 @@ function drawCaption(c, now) {
         break;
       case 'slide':
         ox = -c.tailDir * q * q * W * 0.5;
+        break;
+      case 'sink':
+        oy = q * q * H * 0.35;
+        es = 1 - q * 0.1;
         break;
     }
   }
@@ -2086,6 +2156,7 @@ function updateHud(now) {
     ...Object.entries(features.expr).map(([k, v]) => [EXPRESSION_LABEL[k], v, v.toFixed(2)]),
     ['強さ', features.intensity, features.intensity.toFixed(2)],
   ];
+  const look = main ? `<div class="row"><span class="label">見せ方</span><span>${main.lookLabel}</span></div>` : '';
   hud.innerHTML =
     rows
       .map(
@@ -2096,6 +2167,8 @@ function updateHud(now) {
       )
       .join('') +
     `<div class="row"><span class="label">感情</span><span style="color:${EMOTIONS[emo].color}">${EMOTIONS[emo].label}</span></div>` +
+    look +
+    `<div class="row"><span class="label">おだやか</span><span>${CONFIG.calm ? 'ON' : 'OFF'}</span></div>` +
     `<div class="row"><span class="label">認識</span><span>${running ? '● 聞き取り中' : '停止'}</span></div>` +
     `<div class="row"><span class="label">表情</span><span>${features.faceDetected ? EXPRESSION_LABEL[currentExpression()] : '顔なし'}</span></div>` +
     `<div class="row"><span class="label">雰囲気</span><span style="color:${MOODS[atmosphere.mood].colors[0]}">${MOODS[atmosphere.mood].label}</span>` +
@@ -2172,6 +2245,16 @@ window.addEventListener('keydown', (e) => {
       for (const k in atmosphere.score) atmosphere.score[k] = 0;
       summary.cur = '';
       liveCaption = null;
+      break;
+    case 'o':
+    case 'O':
+      CONFIG.calm = !CONFIG.calm;
+      if (CONFIG.calm) {
+        fx.shake = 0;
+        fx.flash = 0;
+        particles.length = 0;
+      }
+      toast(CONFIG.calm ? 'おだやかモード ON（動きを静かにします）' : 'おだやかモード OFF');
       break;
     case 't':
     case 'T':
