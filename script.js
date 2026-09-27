@@ -26,9 +26,9 @@ const CONFIG = {
   dbCeil: -12, // この音量で最大
   charStagger: 14, // 1 文字ずつ出てくる間隔(ms)
   enterDur: 280, // 単語の登場アニメーションの長さ(ms)
-  bubbleMinI: 0.55, // 声の強さがこれを超えたページには吹き出しを付ける（大きな声だけを吹き出しで目立たせる）
+  bubbleMinI: 0.7, // 声の強さがこれを超えたページには吹き出しを付ける（かなり大きな声だけを吹き出しで目立たせる）
   bubbleMinSurprise: 0.55, // びっくり度（言葉・「！」・声の裏返り・驚き顔から 0..1）がこれを超えたページにも吹き出しを付ける（「マジで」1 語だけでは付けない）
-  jaggedMinI: 0.75, // 声の強さがこれを超えたら、気持ちに関係なく吹き出しをギザギザにする（叫んでいることを形で見せる）
+  jaggedMinI: 0.85, // 声の強さがこれを超えたら、気持ちに関係なく吹き出しをギザギザにする（叫んでいることを形で見せる）
   verticalWordChance: 0.18, // 横書きのページの中で、単語だけ縦にする確率（短いページだけ）
   columnsMaxChars: 8, // 縦書き（ページ全体・単語だけ）を選択肢に入れるのは、ページがこの文字数以下のときだけ
   columnsMinFont: 0.16, // 縦書きにしても、1 文字の高さが画面の高さのこの割合以上で出せるときだけ縦書きにする
@@ -739,6 +739,7 @@ const EXIT_OF = {
 };
 // ページの中で同じくらい出てきたムードは、この順で優先する（強い気持ちほど前）
 const BUBBLE_LABEL = { speech: '角丸', cloud: 'もこもこ', burst: 'ウニフラッシュ', jagged: 'ギザギザ', wavy: '波', drip: 'しずく' };
+const RE_DIGIT = /[0-9０-９]/;
 const MOOD_PRIORITY = ['angry', 'fear', 'sad', 'happy', 'surprise', 'cool'];
 const MOOD_LABEL = { happy: '楽しい', surprise: '驚き', angry: '怒り', sad: '悲しい', fear: '怖い', cool: 'シリアス', calm: '平常' };
 const EXIT_LABEL = { zoomOut: '拡大して弾ける', up: '上へ飛ぶ', pop: '縮んで消える', sink: '沈む', fade: 'フェード', slide: 'スライド' };
@@ -820,8 +821,10 @@ class Chunk {
   }
 
   // 縦書きにするか: ページ全体が縦書き、または短いページで単語だけ縦にするとき
+  // 数字（算用数字）を含む単語は、縦にすると横倒しになって読みにくいので縦にしない
   get vertical() {
     const c = this.cap;
+    if (RE_DIGIT.test(this.text)) return false;
     return c.mode === 'columns' || (c.vwords && this.text.length >= 2 && this.text.length <= 6 && this.roll.vert < CONFIG.verticalWordChance);
   }
 
@@ -1066,7 +1069,8 @@ class Caption {
     let vwords = false;
     if (short && this.chunks.length) {
       const big = (fit) => fit * U >= H * CONFIG.columnsMinFont;
-      if (this.wantColumns && big(fitOf('columns', false))) mode = 'columns';
+      // 数字を含むページは、ページ全体を縦書きにしない
+      if (this.wantColumns && !RE_DIGIT.test(this.text) && big(fitOf('columns', false))) mode = 'columns';
       else if (this.wantColumns && big(fitOf('rows', true))) vwords = true;
     }
     this.mode = mode;
