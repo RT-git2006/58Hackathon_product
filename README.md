@@ -51,18 +51,18 @@ python -m http.server 8000
 5. **感情推定（声+表情）**: 単語のカテゴリ＋声と表情（`prosodyScores`）で 喜び / 驚き / 恐怖 / 怒り / 悲しみ / 平常 を選ぶ（例: 笑顔→喜び、しかめ面→怒り、口角が下がる→悲しみ、目を見開く→驚き）。強さは `computeIntensity` で声と表情・頭の動きを 1 つのスコアに統合（声が主で、表情は増幅役）。表情は会話の雰囲気（背景の色）にも少しずつ効き、真顔でしゃべり続けるとシリアス寄りになる。
 6. **ページ送り**: 1 つの吹き出し（ページ）に入れるのは、文の区切り（。！？）まで、または `CONFIG.pageMaxChars` 文字まで、または文字が `CONFIG.minFontRatio` より小さくなる手前まで。超えたらそのページを閉じて、続きを次のページに出す（長文を 1 つの吹き出しに押し込まない）。見せ方（縦書き・吹き出し・行の組み方・閉じ方）は乱数ではなく、ページの気持ち（ムード）で決める。ムードは、ページの内容のある単語でいちばん多いムード（同数なら 怒り＞怖い＞悲しい＞楽しい＞驚き＞シリアス の順）、なければ声と表情も含めた発話全体の感情で決める。
 
-   | ムード | 書き方 | 吹き出し | 閉じ方 |
+   | ムード | 書き方 | 吹き出しを付けたときの形 | 閉じ方 |
    | --- | --- | --- | --- |
-   | 怖い | 縦書き | なし（テロップ） | 闇に溶ける（フェード） |
-   | 悲しい | 縦書き | なし（テロップ） | 下へ沈む |
-   | シリアス（クール・勉強の話） | 縦書き | なし（テロップ） | 横へスライド |
+   | 怖い | 縦書き | 波 | 闇に溶ける（フェード） |
+   | 悲しい | 縦書き | しずく | 下へ沈む |
+   | シリアス（クール・勉強の話） | 縦書き | 角丸 | 横へスライド |
    | 楽しい | 横書き・行ごとに左右に振る | もこもこ | 拡大して弾ける |
    | 驚き | 横書き・行ごとに左右に振る | ウニフラッシュ | 上へ飛ぶ |
    | 怒り | 横書き | ギザギザ | 縮んで消える |
-   | 平常 | 横書き | なし | フェード |
+   | 平常 | 横書き | 角丸 | フェード |
 
    - 縦書きは、ページが `CONFIG.columnsMaxChars` 文字以下で、縦にしても 1 文字の高さが画面の `CONFIG.columnsMinFont` 以上で出せるときだけ（ページ全体を縦、または単語だけ縦）。長い文は横書き。
-   - 声の強さがそのページの間に `CONFIG.bubbleMinI` を超えたら、どのムードでも吹き出しを付ける（高ぶりを形で見せる）。吹き出しの形は感情で決まる。
+   - 吹き出しは全部のページには付けない。付けるのは、そのページの間の声の強さが `CONFIG.bubbleMinI` を超えたページと、びっくり度（驚きの言葉・「！」「？」・声の裏返り・驚き顔、0..1）が `CONFIG.bubbleMinSurprise` を超えたページだけ。ほかは吹き出しなしのテロップ。形は感情で決まり、声の強さが `CONFIG.jaggedMinI` を超えたら気持ちに関係なくギザギザにする（叫んでいることを形で見せる）。
    - `D` キーの「見せ方」の行に、今のページのムードと見せ方が出る。
 7. **字幕レイアウト**: 単語を行（または縦書きの列）に詰め、組み方を 10 通り試して画面いっぱいに最も大きく表示できるものを選ぶ。声が大きかった単語・内容のある単語ほど大きい。
 8. **内容に合わせた動き**: 単語のカテゴリから「ムード」（楽しい / 悲しい / 怖い / 怒り / 驚き / クール / 平常）を決め、登場の動きと、その後の動きを変える。内容の無い単語は、発話全体の感情のムードと色に合わせる。
@@ -86,7 +86,7 @@ python -m http.server 8000
 - 反応の感度: `CONFIG.dbFloor` / `CONFIG.dbCeil`（会場のマイクに合わせて `D` キーの dB 値を見ながら調整）
 - 文字の最大サイズ: `CONFIG.maxWordRatio`
 - 1 ページの長さ: `CONFIG.pageMaxChars`（最大文字数）/ `CONFIG.minPageChars`（この文字数までは大きさを理由に改ページしない）/ `CONFIG.minFontRatio`
-- 見せ方の決まり: `script.js` の `COLUMN_MOODS`（縦書き）/ `BUBBLE_MOODS`（吹き出し）/ `ZIGZAG_MOODS` / `EXIT_OF`（閉じ方）/ `MOOD_PRIORITY`。吹き出しを付ける声の強さ `CONFIG.bubbleMinI`、縦書きにしてよい条件 `CONFIG.columnsMaxChars` / `CONFIG.columnsMinFont`、単語だけ縦にする確率 `CONFIG.verticalWordChance`
+- 見せ方の決まり: `script.js` の `COLUMN_MOODS`（縦書き）/ `ZIGZAG_MOODS` / `EXIT_OF`（閉じ方）/ `MOOD_PRIORITY`。吹き出しを付ける条件 `CONFIG.bubbleMinI` / `CONFIG.bubbleMinSurprise`、ギザギザにする声の強さ `CONFIG.jaggedMinI`、縦書きにしてよい条件 `CONFIG.columnsMaxChars` / `CONFIG.columnsMinFont`、単語だけ縦にする確率 `CONFIG.verticalWordChance`
 - 語彙・フォント・配色・絵文字: `lexicon.js` の `WORDS` / `KANJI` / `CATEGORIES` / `EMOJI`（方言・若者言葉は `KANSAI` / `DIALECTS` / `SLANG` / `EXTRA_EMOJI`）。CLDR の表を作り直すときは `node tools/build-emoji-ja.js`
 - ムードごとの動き: `script.js` の `MOOD_ENTRANCES` / `chunkEntrance` / `charEntrance` / `charIdle`
 - 会話の履歴: `CONFIG.logLife`（残す時間）/ `CONFIG.logMax`（数）/ `CONFIG.logWidth`（幅）

@@ -26,7 +26,9 @@ const CONFIG = {
   dbCeil: -12, // この音量で最大
   charStagger: 14, // 1 文字ずつ出てくる間隔(ms)
   enterDur: 280, // 単語の登場アニメーションの長さ(ms)
-  bubbleMinI: 0.55, // 声の強さがこれを超えたページには、必ず吹き出しを付ける（高ぶりを形で見せる）
+  bubbleMinI: 0.55, // 声の強さがこれを超えたページには吹き出しを付ける（大きな声だけを吹き出しで目立たせる）
+  bubbleMinSurprise: 0.55, // びっくり度（言葉・「！」・声の裏返り・驚き顔から 0..1）がこれを超えたページにも吹き出しを付ける（「マジで」1 語だけでは付けない）
+  jaggedMinI: 0.75, // 声の強さがこれを超えたら、気持ちに関係なく吹き出しをギザギザにする（叫んでいることを形で見せる）
   verticalWordChance: 0.18, // 横書きのページの中で、単語だけ縦にする確率（短いページだけ）
   columnsMaxChars: 8, // 縦書き（ページ全体・単語だけ）を選択肢に入れるのは、ページがこの文字数以下のときだけ
   columnsMinFont: 0.16, // 縦書きにしても、1 文字の高さが画面の高さのこの割合以上で出せるときだけ縦書きにする
@@ -720,11 +722,11 @@ const CHAR_ENTRANCES = new Set(['jump', 'waveIn', 'drip', 'typewriter', 'wipe', 
 const SCRAMBLE_POOL = 'アイウエオカキクケコサシスセソ01#$%&@*?';
 /* ページの見せ方は、乱数ではなくページの気持ち（ムード）で決める。
  *   縦書き: 怖い・悲しい・シリアス（和風のテロップのように、重さ・静けさを縦の流れで見せる）
- *   吹き出し: 驚き・怒り・楽しい、または声や感情が強いとき（高ぶりを形で見せる）。平常・クール・怖い・悲しいは吹き出しなしのテロップ
+ *   吹き出し: 全部には付けない。声が大きいページと、びっくり度が高いページだけ（大事な瞬間だけ形で目立たせる）。
+ *            形は感情で決まり、声がとても大きいときはギザギザ。それ以外は吹き出しなしのテロップ
  *   行の組み方: 楽しい・驚きは行ごとに左右に振る（弾むリズム）。ほかはそろえる
  *   閉じ方: 下の EXIT_OF */
 const COLUMN_MOODS = new Set(['fear', 'sad', 'cool']);
-const BUBBLE_MOODS = new Set(['surprise', 'angry', 'happy']);
 const ZIGZAG_MOODS = new Set(['happy', 'surprise']);
 const EXIT_OF = {
   happy: 'zoomOut', // 楽しい: 大きくなって弾ける
@@ -736,6 +738,7 @@ const EXIT_OF = {
   calm: 'fade', // 平常: 静かに消える
 };
 // ページの中で同じくらい出てきたムードは、この順で優先する（強い気持ちほど前）
+const BUBBLE_LABEL = { speech: '角丸', cloud: 'もこもこ', burst: 'ウニフラッシュ', jagged: 'ギザギザ', wavy: '波', drip: 'しずく' };
 const MOOD_PRIORITY = ['angry', 'fear', 'sad', 'happy', 'surprise', 'cool'];
 const MOOD_LABEL = { happy: '楽しい', surprise: '驚き', angry: '怒り', sad: '悲しい', fear: '怖い', cool: 'シリアス', calm: '平常' };
 const EXIT_LABEL = { zoomOut: '拡大して弾ける', up: '上へ飛ぶ', pop: '縮んで消える', sink: '沈む', fade: 'フェード', slide: 'スライド' };
@@ -996,8 +999,18 @@ class Caption {
       this.look = best || EMO_MOOD[this.emotion] || 'calm';
       if (final) this.lookFixed = true;
     }
-    // 吹き出し: 高ぶる気持ちのページ、または声が強いページ（一度付いたら外さない）
-    if (BUBBLE_MOODS.has(this.look) || this.loud >= CONFIG.bubbleMinI) this.bubble = true;
+    // 吹き出し: 声が大きいページ、またはびっくり度が高いページだけ（一度付いたら外さない）
+    if (this.loud >= CONFIG.bubbleMinI || this.bikkuri >= CONFIG.bubbleMinSurprise) this.bubble = true;
+  }
+
+  // びっくり度（0..1）: 驚きの言葉・「！」「？」と、声の裏返り・驚き顔
+  get bikkuri() {
+    return clamp(((this.kw.surprise || 0) + this.prosody.surprise) / 2, 0, 1);
+  }
+
+  // 吹き出しの形: 声がとても大きいときはギザギザ、それ以外は感情の形
+  get bubbleShape() {
+    return this.loud >= CONFIG.jaggedMinI ? 'jagged' : EMOTIONS[this.emotion].bubble;
   }
 
   get wantColumns() {
@@ -1014,7 +1027,7 @@ class Caption {
 
   // 解析値表示（D キー）用の説明
   get lookLabel() {
-    const shape = this.bubble ? `吹き出し(${EMOTIONS[this.emotion].bubble})` : '吹き出しなし';
+    const shape = this.bubble ? `吹き出し(${BUBBLE_LABEL[this.bubbleShape]})` : '吹き出しなし';
     const dir = this.mode === 'columns' ? '縦書き' : this.vwords ? '横書き+縦の単語' : '横書き';
     return `${MOOD_LABEL[this.look]} → ${dir} / ${shape} / ${EXIT_LABEL[this.exit]}`;
   }
@@ -1790,7 +1803,7 @@ function bubblePath(shape, a, b, now, seed) {
 
 function drawBubble(c, now) {
   const e = EMOTIONS[c.emotion];
-  const shape = e.bubble;
+  const shape = c.bubbleShape;
   const pad = U * 0.35;
   const age = (now - c.born) / 300;
   const pop = age < 1 ? easeOutBack(clamp(age, 0, 1), 2.2) : 1;
