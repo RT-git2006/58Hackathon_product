@@ -141,6 +141,13 @@ const CATEGORIES = {
     palettes: [['#ffffff', '#ff2e63'], ['#fff95e', '#ff00aa'], ['#7dfff1', '#7a2cff']],
     emo: { surprise: 0.4 },
   },
+  sacred: {
+    label: '仏教・祈り',
+    fonts: ['Yuji Syuku', 'Yuji Boku', 'Zen Antique', 'Kaisei Decol'],
+    styles: ['telop', 'neon', 'solid'],
+    palettes: [['#fff2c2', '#c89200'], ['#ffe0d0', '#d9381e'], ['#f3e6ff', '#7b3fb8'], ['#ffffff', '#b8860b']],
+    emo: {},
+  },
   katakana: {
     label: 'カタカナ語',
     fonts: ['Dela Gothic One', 'RocknRoll One', 'Train One', 'Rampart One'],
@@ -209,6 +216,40 @@ const WORDS = {
 };
 
 // 漢字 1 文字 → カテゴリ（辞書に無い単語でも、漢字の意味から見た目を決めるため）
+// 仏教（法華宗・日蓮系を中心に）の言葉。落ち着いた・厳かな見せ方（シリアス＝縦書きのテロップ）にする
+const SACRED_WORDS = [
+  '南無妙法蓮華経', '妙法蓮華経', '南無', '妙法', '蓮華経', '法華経', '法華宗', '日蓮宗', '日蓮', '日蓮聖人', '日蓮大聖人', '大聖人', '聖人',
+  'お題目', '題目', '唱題', '勤行', '御本尊', '本尊', '大曼荼羅', '曼荼羅', '御書', '立正安国論', '開目抄', '観心本尊抄',
+  '方便品', '寿量品', '如来寿量品', '自我偈', '一念三千', '久遠実成', '久遠寺', '身延山', '本門寺', '池上本門寺', '御会式', '万灯',
+  '法難', '龍口', '佐渡', '上人', '住職', 'お坊さん', '僧侶', 'お寺', '寺院', '仏教', '仏法', '仏様', 'ほとけさま', 'お釈迦様', '釈迦',
+  '釈尊', '如来', '菩薩', '仏陀', '成仏', '悟り', 'さとり', '煩悩', '因果', 'ご縁', '慈悲', '功徳', '信心', '信仰', '合掌', '数珠',
+  '念珠', 'お経', '読経', '経文', '供養', '回向', '法要', '法話', '仏壇', 'お線香', '線香', '位牌', '墓参り', 'お墓', 'お彼岸', 'お盆',
+  '涅槃', '極楽', '浄土', '南無阿弥陀仏', '阿弥陀', '座禅', '坐禅', '禅', '修行', '祈り', 'お祈り', '祈る', '拝む', 'おがむ',
+];
+WORDS.sacred = SACRED_WORDS;
+
+// 簡単な英語（英字でもカタカナでも）。英字は大文字・小文字を区別せず、単語の区切りで一致させる
+const ENGLISH_WORDS = {
+  joy: ['happy', 'fun', 'great', 'nice', 'good', 'yay', 'yeah', 'awesome', 'fantastic', 'wonderful', 'excellent', 'perfect',
+    'enjoy', 'smile', 'laugh', 'ハッピー', 'グレート', 'ナイス', 'イエーイ', 'パーフェクト', 'エンジョイ', 'スマイル'],
+  love: ['love', 'like', 'cute', 'kind', 'friend', 'friends', 'キュート', 'フレンド'],
+  sad: ['sad', 'sorry', 'cry', 'lonely', 'tired', 'sick', 'bad', 'ソーリー', 'サッド'],
+  fear: ['scary', 'ghost', 'help', 'afraid', 'danger', 'dark', 'ヘルプ'],
+  anger: ['angry', 'mad', 'stop', 'noisy', 'ストップ'],
+  surprise: ['wow', 'what', 'really', 'amazing', 'omg', 'oh', 'surprise', 'ワオ', 'ワーオ', 'オーマイガー', 'サプライズ', 'リアリー'],
+  cool: ['cool', 'hero', 'magic', 'star'],
+  food: ['apple', 'banana', 'orange', 'grape', 'strawberry', 'melon', 'pizza', 'cake', 'bread', 'rice', 'milk', 'juice', 'water',
+    'lunch', 'dinner', 'breakfast', 'ice cream', 'hamburger', 'sandwich', 'curry', 'egg', 'candy', 'chocolate', 'cookie', 'hungry',
+    'delicious', 'yummy', 'eat', 'drink', 'デリシャス', 'ヤミー'],
+  nature: ['cat', 'dog', 'bird', 'fish', 'rabbit', 'bear', 'lion', 'monkey', 'panda', 'elephant', 'sun', 'sunny', 'rain', 'rainy',
+    'snow', 'cloud', 'cloudy', 'wind', 'flower', 'tree', 'sea', 'mountain', 'river', 'spring', 'summer', 'fall', 'autumn', 'winter'],
+  tech: ['game', 'computer', 'robot', 'phone', 'school', 'book', 'pen', 'pencil', 'desk', 'teacher', 'student', 'class', 'test',
+    'homework', 'english', 'math', 'science', 'music'],
+  neutral: ['hello', 'hi', 'bye', 'goodbye', 'thank', 'thanks', 'please', 'yes', 'no', 'ok', 'okay', 'morning', 'night',
+    'ハロー', 'サンキュー', 'プリーズ', 'イエス', 'グッバイ', 'モーニング'],
+};
+for (const [cat, words] of Object.entries(ENGLISH_WORDS)) WORDS[cat] = (WORDS[cat] || []).concat(cat === 'neutral' ? [] : words);
+
 const KANJI = {
   fear: '怖恐死殺血闇霊鬼呪怨骸屍墓葬幽獄悪毒狂惨凶禍骨亡腐蝕妖怪祟危険警震慄叫襲喰牙棺影冥邪災罠傷痛病',
   surprise: '驚愕奇突急仰天唖怪異変謎',
@@ -274,12 +315,24 @@ for (const dict of [KANSAI, DIALECTS, SLANG]) {
 }
 
 // ---------- 分類処理 ----------
+KANJI.sacred = '仏僧菩薩禅拝寺';
+
 const KANJI_MAP = new Map();
 for (const [cat, chars] of Object.entries(KANJI)) {
   for (const ch of chars) if (!KANJI_MAP.has(ch)) KANJI_MAP.set(ch, cat);
 }
 const WORD_LIST = [];
 for (const [cat, words] of Object.entries(WORDS)) for (const w of words) WORD_LIST.push([w, cat]);
+
+const RE_ASCII_WORD = /^[a-z][a-z' ]*$/;
+const asciiRegex = new Map();
+// text に単語 w が含まれるか。英単語は小文字にした text の中で、前後が英字でない位置だけ一致させる
+function hasWord(text, lower, w) {
+  if (!RE_ASCII_WORD.test(w)) return text.includes(w);
+  let re = asciiRegex.get(w);
+  if (!re) asciiRegex.set(w, (re = new RegExp(`(^|[^a-z])${w}([^a-z]|$)`)));
+  return re.test(lower);
+}
 
 const RE_KATAKANA = /^[゠-ヿー・！？!?]+$/;
 // ドキドキ・ゴゴゴ・わくわく のような繰り返しの擬音
@@ -292,8 +345,9 @@ function classifyChunk(text) {
   if (classifyCache.has(text)) return classifyCache.get(text);
   const score = {};
   const add = (cat, v) => (score[cat] = (score[cat] || 0) + v);
+  const lower = text.toLowerCase();
   for (const [w, cat] of WORD_LIST) {
-    if (text.includes(w)) add(cat, 2 + w.length);
+    if (hasWord(text, lower, w)) add(cat, 2 + w.length);
   }
   for (const ch of text) {
     const cat = KANJI_MAP.get(ch);
@@ -452,6 +506,63 @@ const KANSAI_EMOJI = {
 };
 for (const [e, words] of Object.entries(KANSAI_EMOJI)) EMOJI[e] = (EMOJI[e] || []).concat(words);
 
+// 仏教（法華宗・日蓮系を中心に）の絵文字
+const SACRED_EMOJI = {
+  '🙏': ['南無妙法蓮華経', '南無', 'お題目', '題目', '唱題', '勤行', '合掌', '祈り', 'お祈り', '祈る', '拝む', 'おがむ', '信心', '信仰',
+    '供養', '回向', '法要', '成仏', '南無阿弥陀仏', '功徳', '慈悲', 'ご縁', 'お線香', '線香', '仏壇', '位牌', 'お盆', 'お彼岸'],
+  '🪷': ['妙法蓮華経', '蓮華経', '法華経', '妙法', '蓮華', '蓮の花', '極楽', '浄土', '涅槃'],
+  '☸️': ['仏教', '仏法', '法華宗', '日蓮宗', '一念三千', '久遠実成', '因果'],
+  '📿': ['数珠', '念珠'],
+  '📜': ['御書', 'お経', '読経', '経文', '立正安国論', '開目抄', '観心本尊抄', '方便品', '寿量品', '如来寿量品', '自我偈', '法話'],
+  '🧘': ['悟り', 'さとり', '座禅', '坐禅', '禅', '修行', '煩悩'],
+  '🛕': ['お寺', '寺院', '久遠寺', '身延山', '本門寺', '池上本門寺'],
+  '🏮': ['御会式', '万灯'],
+  '🪦': ['墓参り', 'お墓'],
+  '🧑‍🦲': ['お坊さん', '僧侶', '住職', '上人'],
+  '✨': ['日蓮大聖人', '日蓮聖人', '大聖人', '御本尊', '本尊', '大曼荼羅', '曼荼羅', '仏様', 'ほとけさま', 'お釈迦様', '釈尊', '如来', '菩薩', '仏陀'],
+};
+for (const [e, words] of Object.entries(SACRED_EMOJI)) EMOJI[e] = (EMOJI[e] || []).concat(words);
+
+// 簡単な英語の絵文字（英字はカタカナの言い方も一緒に）
+const ENGLISH_EMOJI = {
+  '👋': ['hello', 'hi', 'bye', 'goodbye', 'ハロー', 'グッバイ'],
+  '🙏': ['thank', 'thanks', 'please', 'サンキュー', 'プリーズ'],
+  '👌': ['ok', 'okay'],
+  '👍': ['yes', 'good', 'great', 'nice', 'イエス'],
+  '🙅': ['no'],
+  '😊': ['happy', 'smile', 'ハッピー', 'スマイル'],
+  '🎉': ['fun', 'yay', 'awesome', 'fantastic', 'wonderful', 'enjoy', 'イエーイ'],
+  '💯': ['perfect', 'excellent', 'パーフェクト'],
+  '❤️': ['love', 'like'],
+  '🥰': ['cute', 'キュート'],
+  '🧑‍🤝‍🧑': ['friend', 'friends', 'フレンド'],
+  '😢': ['sad', 'cry', 'lonely', 'サッド'],
+  '🙇': ['sorry', 'ソーリー'],
+  '😲': ['wow', 'really', 'amazing', 'omg', 'ワオ', 'ワーオ', 'オーマイガー', 'リアリー'],
+  '🎁': ['surprise', 'サプライズ'],
+  '😱': ['scary', 'afraid'],
+  '👻': ['ghost'],
+  '🆘': ['help', 'ヘルプ'],
+  '😠': ['angry', 'mad'],
+  '✋': ['stop', 'ストップ'],
+  '😎': ['cool'],
+  '⭐': ['star'],
+  '🍎': ['apple'], '🍌': ['banana'], '🍊': ['orange'], '🍇': ['grape'], '🍓': ['strawberry'], '🍈': ['melon'],
+  '🍕': ['pizza'], '🍰': ['cake'], '🍞': ['bread'], '🍚': ['rice'], '🥛': ['milk'], '🧃': ['juice'], '💧': ['water'],
+  '🍱': ['lunch'], '🍽️': ['dinner'], '🍳': ['breakfast', 'egg'], '🍦': ['ice cream'], '🍔': ['hamburger'], '🥪': ['sandwich'],
+  '🍛': ['curry'], '🍬': ['candy'], '🍫': ['chocolate'], '🍪': ['cookie'], '😋': ['delicious', 'yummy', 'デリシャス', 'ヤミー'],
+  '🤤': ['hungry'],
+  '🐱': ['cat'], '🐶': ['dog'], '🐦': ['bird'], '🐟': ['fish'], '🐰': ['rabbit'], '🐻': ['bear'], '🦁': ['lion'], '🐵': ['monkey'],
+  '🐼': ['panda'], '🐘': ['elephant'],
+  '☀️': ['sun', 'sunny', 'morning', 'モーニング'], '☔': ['rain', 'rainy'], '⛄': ['snow', 'winter'], '☁️': ['cloud', 'cloudy'],
+  '🌬️': ['wind'], '🌸': ['flower', 'spring'], '🌳': ['tree'], '🌊': ['sea'], '⛰️': ['mountain'], '🏞️': ['river'], '🌻': ['summer'],
+  '🍁': ['fall', 'autumn'], '🌙': ['night'],
+  '🎮': ['game'], '💻': ['computer'], '🤖': ['robot'], '📱': ['phone'], '🏫': ['school', 'class'], '📚': ['book'], '🖊️': ['pen'],
+  '✏️': ['pencil', 'homework'], '🧑‍🏫': ['teacher'], '🧑‍🎓': ['student'], '📝': ['test'], '🔤': ['english'], '➗': ['math'],
+  '🔬': ['science'], '🎵': ['music'],
+};
+for (const [e, words] of Object.entries(ENGLISH_EMOJI)) EMOJI[e] = (EMOJI[e] || []).concat(words);
+
 const EMOJI_LIST = [];
 for (const [e, words] of Object.entries(EMOJI)) for (const w of words) EMOJI_LIST.push([w, e]);
 EMOJI_LIST.sort((a, b) => b[0].length - a[0].length);
@@ -482,8 +593,9 @@ function findEmoji(text) {
   // 手書きの辞書と CLDR の両方で探し、長く一致した方を使う（「神社」は「神」ではなく⛩）
   let found = '';
   let foundLen = 0;
+  const lower = text.toLowerCase();
   for (const [w, e] of EMOJI_LIST) {
-    if (text.includes(w)) {
+    if (hasWord(text, lower, w)) {
       found = e;
       foundLen = w.length;
       break;
@@ -496,4 +608,6 @@ function findEmoji(text) {
 }
 
 // 音声認識へのヒントにする単語（ブラウザが対応していれば、これらの単語が認識されやすくなる）
-const HINT_WORDS = [...new Set(Object.values(WORDS).flat())].filter((w) => w.length >= 2 && !/[!！?？、。]/.test(w));
+const HINT_WORDS = [...new Set([...SACRED_WORDS, ...Object.values(WORDS).flat()])].filter(
+  (w) => w.length >= 2 && !/[!！?？、。]/.test(w) && !RE_ASCII_WORD.test(w),
+);

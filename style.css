@@ -472,7 +472,7 @@ body.running.settings-open {
   border-radius: 20px;
   box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.55);
   font: 900 clamp(16px, 1.5vw, 28px) / 1.45 var(--ui-font);
-  word-break: break-all;
+  overflow-wrap: anywhere; /* 日本語はどこでも折り返し、英単語はなるべく途中で切らない */
   transform: rotate(0.6deg);
   transition: opacity 0.5s;
 }

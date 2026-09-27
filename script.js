@@ -622,7 +622,17 @@ const RE_INTENSIFIER =
   /めっちゃ|めっさ|むっちゃ|めちゃ|ごっつ|えらい|ほんま|ホンマ|すっご|超|クソ|くっそ|バリ|ばり|ぶち|でら|なまら|でーじ|ちかっぱ|がばい|わや|鬼|激|爆|ガチ|マジで/;
 const MAX_CHUNK = 8;
 
-const normalize = (text) => text.replace(/\s+/g, '');
+// 空白を取り除く。ただし英語の単語の間の空白は残す（"thank you" が "thankyou" にならないように）
+const RE_LATIN = /[A-Za-z0-9'’]/;
+// a の後ろに b を続けるとき、間に空白が要るか（英単語どうし、英語の「, . ! ?」の後ろに英単語）
+const needsSpace = (a, b) => !!a && !!b && (RE_LATIN.test(a) || /[,.!?]/.test(a)) && RE_LATIN.test(b);
+// 単語をつなげて文に戻す
+function joinWords(words) {
+  let text = '';
+  for (const w of words) text += (needsSpace(text[text.length - 1], w[0]) ? ' ' : '') + w;
+  return text;
+}
+const normalize = (text) => text.trim().replace(/\s+/g, (m, i, s) => (needsSpace(s[i - 1], s[i + m.length]) ? ' ' : ''));
 
 function splitChunks(text) {
   let segs;
@@ -653,7 +663,7 @@ function splitChunks(text) {
   // 長すぎる単語は分割（画面いっぱいに大きく見せるため）
   const res = [];
   for (const t of out) {
-    if (t.length <= MAX_CHUNK + 2) res.push(t);
+    if (t.length <= MAX_CHUNK + 2 || /^[A-Za-z'’!?.,]+$/.test(t)) res.push(t);
     else for (let i = 0; i < t.length; i += MAX_CHUNK) res.push(t.slice(i, i + MAX_CHUNK));
   }
   return res;
@@ -697,7 +707,7 @@ function pickEmotion(kw, prosody) {
 const MOOD_OF = {
   joy: 'happy', love: 'happy', funny: 'happy', food: 'happy', sound: 'happy',
   sad: 'sad', fear: 'fear', anger: 'angry', power: 'angry', surprise: 'surprise',
-  cool: 'cool', tech: 'cool', nature: 'calm', katakana: 'calm', neutral: 'calm',
+  cool: 'cool', tech: 'cool', sacred: 'cool', nature: 'calm', katakana: 'calm', neutral: 'calm',
 };
 // 発話全体の感情 → ムード（内容の無い単語は、発話全体の雰囲気に合わせる）
 const EMO_MOOD = { joy: 'happy', sad: 'sad', fear: 'fear', anger: 'angry', surprise: 'surprise', neutral: 'calm' };
@@ -739,7 +749,7 @@ const EXIT_OF = {
 };
 // ページの中で同じくらい出てきたムードは、この順で優先する（強い気持ちほど前）
 const BUBBLE_LABEL = { speech: '角丸', cloud: 'もこもこ', burst: 'ウニフラッシュ', jagged: 'ギザギザ', wavy: '波', drip: 'しずく' };
-const RE_DIGIT = /[0-9０-９]/;
+const RE_DIGIT = /[0-9０-９A-Za-zＡ-Ｚａ-ｚ]/; // 縦にすると横倒しになる文字（算用数字・英字）
 const MOOD_PRIORITY = ['angry', 'fear', 'sad', 'happy', 'surprise', 'cool'];
 const MOOD_LABEL = { happy: '楽しい', surprise: '驚き', angry: '怒り', sad: '悲しい', fear: '怖い', cool: 'シリアス', calm: '平常' };
 const EXIT_LABEL = { zoomOut: '拡大して弾ける', up: '上へ飛ぶ', pop: '縮んで消える', sink: '沈む', fade: 'フェード', slide: 'スライド' };
@@ -821,7 +831,7 @@ class Chunk {
   }
 
   // 縦書きにするか: ページ全体が縦書き、または短いページで単語だけ縦にするとき
-  // 数字（算用数字）を含む単語は、縦にすると横倒しになって読みにくいので縦にしない
+  // 数字（算用数字）・英字を含む単語は、縦にすると横倒しになって読みにくいので縦にしない
   get vertical() {
     const c = this.cap;
     if (RE_DIGIT.test(this.text)) return false;
@@ -1069,7 +1079,7 @@ class Caption {
     let vwords = false;
     if (short && this.chunks.length) {
       const big = (fit) => fit * U >= H * CONFIG.columnsMinFont;
-      // 数字を含むページは、ページ全体を縦書きにしない
+      // 数字・英字を含むページは、ページ全体を縦書きにしない
       if (this.wantColumns && !RE_DIGIT.test(this.text) && big(fitOf('columns', false))) mode = 'columns';
       else if (this.wantColumns && big(fitOf('rows', true))) vwords = true;
     }
@@ -1269,11 +1279,18 @@ let logReserve = 0; // 字幕が避ける右側の幅(px)
 let utterCount = 0; // 発言の通し番号（ページがどの発言のものか）
 
 function addLog(c) {
-  addLogText(c.utter, c.chunks.map((k) => k.text + (k.emoji || '')).join(''), c.emotion);
+  // 絵文字は単語の後ろに付けるが、空白を入れるかは単語の文字で決める
+  let text = '';
+  let last = '';
+  for (const k of c.chunks) {
+    text += (needsSpace(last, k.text[0]) ? ' ' : '') + k.text + (k.emoji || '');
+    last = k.text[k.text.length - 1];
+  }
+  addLogText(c.utter, text, c.emotion, c.chunks[0] && c.chunks[0].text[0], last);
 }
 
 // key が同じ間は 1 つの吹き出しに続けて書く（同じ発言が何ページかに分かれたとき）
-function addLogText(key, text, emotion) {
+function addLogText(key, text, emotion, firstChar = text[0], lastChar = text[text.length - 1]) {
   if (!text) return;
   const now = performance.now();
   let item = logItems[logItems.length - 1];
@@ -1284,7 +1301,8 @@ function addLogText(key, text, emotion) {
     item = { utter: key, el, text: '', last: now };
     logItems.push(item);
   }
-  item.text += text;
+  item.text += (needsSpace(item.lastChar, firstChar) ? ' ' : '') + text;
+  item.lastChar = lastChar;
   item.last = now;
   item.el.textContent = item.text;
   // 吹き出しの色は、字幕の吹き出しと同じく感情で決める
@@ -1371,18 +1389,23 @@ function burstParticles(x, y, n, emotion) {
   }
 }
 
+// text の from から、空白を数えずに n 文字進んだ位置（その後ろの空白も飛ばす）
+function skipChars(text, from, n) {
+  let i = from;
+  while (i < text.length && n > 0) if (!/\s/.test(text[i++])) n--;
+  while (i < text.length && /\s/.test(text[i])) i++;
+  return i;
+}
+
 // 今のページに収まらなくなったら、ページを閉じて続きを次のページへ送る
 function paginate(text, now) {
   for (let guard = 0; guard < 10; guard++) {
     const keep = liveCaption.breakPoint();
     if (!keep) return;
-    const kept = liveCaption.chunks
-      .slice(0, keep)
-      .map((k) => k.text)
-      .join('');
+    const kept = joinWords(liveCaption.chunks.slice(0, keep).map((k) => k.text));
     liveCaption.setText(kept, now);
     liveCaption.commit(now);
-    utter.start += kept.length;
+    utter.start = skipChars(text, utter.start, kept.replace(/\s/g, '').length);
     liveCaption = newCaption(now);
     liveCaption.setText(text.slice(utter.start), now);
   }
@@ -1499,6 +1522,21 @@ function initRecognition() {
 
   running = true;
   startRecognition();
+}
+
+// 音声認識の言語を 日本語 ⇔ 英語 で切り替える（英語の授業・英語で話すとき）
+const LANG_LABEL = { 'ja-JP': '日本語', 'en-US': '英語' };
+function toggleLanguage() {
+  CONFIG.lang = CONFIG.lang === 'ja-JP' ? 'en-US' : 'ja-JP';
+  toast(`音声認識: ${LANG_LABEL[CONFIG.lang]}`);
+  if (!recognition) return;
+  recognition.lang = CONFIG.lang;
+  // いったん止めると onend で新しい言語のまま再開する
+  try {
+    recognition.stop();
+  } catch (err) {
+    /* 止まっている */
+  }
 }
 
 function startRecognition() {
@@ -2372,7 +2410,7 @@ function updateHud(now) {
     row('要約', summary.cur || 'なし') +
     row('話題', [...topics].sort((a, b) => b.weight - a.weight).map((t) => t.emoji).join(' ') || 'なし') +
     sticker('ようす') +
-    row('認識', running ? '● 聞き取り中' : '停止') +
+    row('認識', `${running ? '● 聞き取り中' : '停止'}（${LANG_LABEL[CONFIG.lang]}）`) +
     row('おだやか', CONFIG.calm ? 'ON' : 'OFF') +
     (words ? `<div class="words">${words}</div>` : '');
 }
@@ -2530,6 +2568,10 @@ window.addEventListener('keydown', (e) => {
       for (const k in atmosphere.score) atmosphere.score[k] = 0;
       summary.cur = '';
       liveCaption = null;
+      break;
+    case 'e':
+    case 'E':
+      toggleLanguage();
       break;
     case 's':
     case 'S':
