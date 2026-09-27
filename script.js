@@ -2329,6 +2329,7 @@ function frame() {
   render(now, dt);
   drawCamView();
   updateHud(now);
+  updateSettingsMeter();
   requestAnimationFrame(frame);
 }
 
@@ -2407,6 +2408,97 @@ async function start() {
 
 startBtn.addEventListener('click', start);
 
+/* =========================================================
+ * 設定画面（S キー）: しきい値をスライダーで調整する。
+ *   調整した値はこのブラウザに保存し、次に開いたときも使う
+ * ========================================================= */
+const settingsEl = document.getElementById('settings');
+const SETTINGS_KEY = 'gekiomo-settings';
+const SETTINGS = [
+  { key: 'bubbleMinI', label: '吹き出しが付く声の強さ', min: 0.3, max: 1, step: 0.01, meter: true },
+  { key: 'jaggedMinI', label: 'ギザギザになる声の強さ', min: 0.3, max: 1, step: 0.01, meter: true },
+  { key: 'bubbleMinSurprise', label: '吹き出しが付くびっくり度', min: 0.2, max: 1, step: 0.01 },
+  { key: 'dbFloor', label: 'マイク: 無音とみなす音量', min: -80, max: -30, step: 1, unit: 'dB' },
+  { key: 'dbCeil', label: 'マイク: 最大とみなす音量', min: -40, max: 0, step: 1, unit: 'dB' },
+];
+const SETTINGS_DEFAULT = Object.fromEntries(SETTINGS.map((o) => [o.key, CONFIG[o.key]]));
+const fmtSetting = (o, v) => (o.unit ? `${v}${o.unit}` : Number(v).toFixed(2));
+
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(Object.fromEntries(SETTINGS.map((o) => [o.key, CONFIG[o.key]]))));
+  } catch (err) {
+    /* 保存できない環境では、この回だけ使う */
+  }
+}
+
+function loadSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    for (const o of SETTINGS) if (typeof saved[o.key] === 'number') CONFIG[o.key] = clamp(saved[o.key], o.min, o.max);
+  } catch (err) {
+    /* 読めなければ初期値のまま */
+  }
+}
+
+function buildSettings() {
+  settingsEl.innerHTML =
+    '<div class="sticker">せってい</div>' +
+    // 今の声の強さのメーター（吹き出し・ギザギザのしきい値に印）
+    '<div class="meter"><i class="now"></i><b class="mark bubble"></b><b class="mark jagged"></b></div>' +
+    '<div class="meter-label"><span>今の声の強さ <em class="now-val">0.00</em></span><span><b class="dot bubble"></b>吹き出し <b class="dot jagged"></b>ギザギザ</span></div>' +
+    SETTINGS.map(
+      (o) =>
+        `<label class="setting"><span class="name">${o.label}<em data-val="${o.key}"></em></span>` +
+        `<input type="range" data-key="${o.key}" min="${o.min}" max="${o.max}" step="${o.step}"></label>`,
+    ).join('') +
+    '<div class="buttons"><button type="button" class="reset">もとに戻す</button><button type="button" class="close">とじる（S）</button></div>';
+  for (const input of settingsEl.querySelectorAll('input[type=range]')) {
+    input.addEventListener('input', () => {
+      CONFIG[input.dataset.key] = Number(input.value);
+      syncSettings();
+      saveSettings();
+    });
+  }
+  settingsEl.querySelector('.reset').addEventListener('click', () => {
+    Object.assign(CONFIG, SETTINGS_DEFAULT);
+    syncSettings();
+    saveSettings();
+  });
+  settingsEl.querySelector('.close').addEventListener('click', () => toggleSettings(false));
+  syncSettings();
+}
+
+// スライダーと表示を、今の設定値に合わせる
+function syncSettings() {
+  for (const o of SETTINGS) {
+    settingsEl.querySelector(`input[data-key="${o.key}"]`).value = CONFIG[o.key];
+    settingsEl.querySelector(`[data-val="${o.key}"]`).textContent = fmtSetting(o, CONFIG[o.key]);
+  }
+  settingsEl.querySelector('.mark.bubble').style.left = `${CONFIG.bubbleMinI * 100}%`;
+  settingsEl.querySelector('.mark.jagged').style.left = `${CONFIG.jaggedMinI * 100}%`;
+}
+
+// 設定画面を開いている間は、今の声の強さをメーターに出す（しきい値を見ながら調整できる）
+function updateSettingsMeter() {
+  if (settingsEl.hidden) return;
+  const I = features.intensity;
+  const bar = settingsEl.querySelector('.meter .now');
+  bar.style.width = `${(I * 100).toFixed(1)}%`;
+  bar.style.background = I >= CONFIG.jaggedMinI ? '#ff3b3b' : I >= CONFIG.bubbleMinI ? '#ffd23f' : '#3fe0ff';
+  settingsEl.querySelector('.now-val').textContent = I.toFixed(2);
+}
+
+function toggleSettings(show = settingsEl.hidden) {
+  settingsEl.hidden = !show;
+  // 実行中はマウスカーソルを消しているので、設定画面を開いている間だけ出す
+  document.body.classList.toggle('settings-open', show);
+  if (!show && document.activeElement && settingsEl.contains(document.activeElement)) document.activeElement.blur();
+}
+
+loadSettings();
+buildSettings();
+
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen();
   else document.documentElement.requestFullscreen().catch(() => toast('F11 キーでフルスクリーンにしてください'));
@@ -2438,6 +2530,10 @@ window.addEventListener('keydown', (e) => {
       for (const k in atmosphere.score) atmosphere.score[k] = 0;
       summary.cur = '';
       liveCaption = null;
+      break;
+    case 's':
+    case 'S':
+      toggleSettings();
       break;
     case 'o':
     case 'O':

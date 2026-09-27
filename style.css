@@ -260,6 +260,131 @@ kbd {
   margin-right: 4px;
 }
 
+/* ---------- 設定画面（S キー） ---------- */
+#settings {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  width: min(560px, 92vw);
+  transform: translateX(-50%);
+  padding: 12px 20px 16px;
+  background: var(--paper);
+  color: var(--ink);
+  border: 4px solid var(--ink);
+  border-radius: 24px;
+  box-shadow: 7px 7px 0 var(--ink);
+  font: 800 15px/1.5 var(--ui-font);
+  font-variant-numeric: tabular-nums;
+  z-index: 7;
+}
+
+#settings[hidden] {
+  display: none;
+}
+
+body.running.settings-open {
+  cursor: auto;
+}
+
+#settings .meter {
+  position: relative;
+  height: 22px;
+  margin: 10px 0 4px;
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  background: #eee;
+  overflow: hidden;
+}
+
+#settings .meter .now {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-right: 3px solid var(--ink);
+}
+
+#settings .mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 5px;
+  margin-left: -2px;
+  border: 1px solid var(--ink);
+}
+
+#settings .bubble {
+  background: #ffd23f;
+}
+
+#settings .jagged {
+  background: #ff3b3b;
+}
+
+#settings .meter-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+#settings .meter-label em {
+  font-style: normal;
+}
+
+#settings .dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin: 0 3px 0 8px;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+}
+
+#settings .setting {
+  display: block;
+  margin-top: 10px;
+}
+
+#settings .name {
+  display: flex;
+  justify-content: space-between;
+}
+
+#settings .name em {
+  font-style: normal;
+  padding: 0 10px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: var(--pop-yellow);
+}
+
+#settings input[type='range'] {
+  width: 100%;
+  accent-color: var(--pop-pink);
+  cursor: pointer;
+}
+
+#settings .buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+#settings button {
+  padding: 4px 18px;
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 3px 3px 0 var(--ink);
+  font: 400 15px var(--title-font);
+  cursor: pointer;
+}
+
+#settings button.close {
+  background: var(--pop-yellow);
+}
+
 /* ---------- 手入力フォーム ---------- */
 #textForm {
   position: fixed;

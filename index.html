@@ -23,6 +23,7 @@
       <li><kbd>D</kbd> 解析値の表示/非表示</li>
       <li><kbd>Enter</kbd> テキストを手入力（音声認識が使えない時の代替）</li>
       <li><kbd>C</kbd> 字幕をクリア</li>
+      <li><kbd>S</kbd> 設定（吹き出しが付く声の強さ・マイクの感度）をスライダーで調整</li>
       <li><kbd>O</kbd> おだやかモード（動きを静かにする）の切替</li>
       <li><kbd>L</kbd> 会話の履歴（右上）の表示/非表示</li>
       <li><kbd>V</kbd> カメラ映像（顔と今の表情）の表示/非表示</li>
@@ -37,6 +38,9 @@
 
   <!-- デバッグ用の解析値表示 -->
   <div id="hud" hidden></div>
+
+  <!-- 設定画面（S キー）: しきい値をスライダーで調整する -->
+  <div id="settings" hidden></div>
 
   <!-- 右上の会話の履歴（後から読み返せるように） -->
   <div id="log" hidden><span class="sticker">さっきの話</span></div>
