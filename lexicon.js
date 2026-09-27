@@ -228,6 +228,11 @@ const SACRED_WORDS = [
 ];
 WORDS.sacred = SACRED_WORDS;
 
+// 中に短い言葉を含むが、意味が違う長い言葉（「スクール」の「クール」、「クラブ」の「ラブ」）
+WORDS.neutral = ['クラブ', 'サークル'];
+WORDS.tech = WORDS.tech.concat(['スクール', 'スクールバス']);
+WORDS.sad = WORDS.sad.concat(['トラブル']);
+
 // 簡単な英語（英字でもカタカナでも）。英字は大文字・小文字を区別せず、単語の区切りで一致させる
 const ENGLISH_WORDS = {
   joy: ['happy', 'fun', 'great', 'nice', 'good', 'yay', 'yeah', 'awesome', 'fantastic', 'wonderful', 'excellent', 'perfect',
@@ -258,7 +263,7 @@ const KANJI = {
   sad: '悲泣涙哀寂孤別失敗辛苦嘆惜憂鬱喪去散枯弱虚',
   love: '愛恋好婚嫁姫萌抱恋麗美媛妹姉嬢',
   power: '爆炎火雷撃破壊砲拳力強猛烈轟燃熱炸裂銃闘斬突衝撃砕',
-  cool: '剣刀槍盾鎧騎士神王竜龍魔法術聖翼覇英雄勇戦兵軍城宝冒険星宙宇界運命銀黄金紋章',
+  cool: '剣刀槍盾鎧騎士神王竜龍魔術聖翼覇英雄勇戦兵軍城宝冒険星宙宇界運命銀黄金紋章',
   food: '食飯肉魚米麺酒茶菓甘味寿司鍋焼餅卵菜果苺桃飲腹糖塩油粉汁丼',
   nature: '花桜木森林山川海空雨雪風雲虹月草葉鳥犬猫虫馬熊狐狸兎蝶岩湖波光陽',
   tech: '電機械算数値計科技網線画像機器装置信号解析',
@@ -346,8 +351,22 @@ function classifyChunk(text) {
   const score = {};
   const add = (cat, v) => (score[cat] = (score[cat] || 0) + v);
   const lower = text.toLowerCase();
+  // 一致した言葉を長い順に見て、もっと長く一致した言葉の中にある短い言葉は数えない（「スクール」の中の「クール」など）
+  const hits = [];
   for (const [w, cat] of WORD_LIST) {
-    if (hasWord(text, lower, w)) add(cat, 2 + w.length);
+    if (RE_ASCII_WORD.test(w)) {
+      if (hasWord(text, lower, w)) add(cat, 2 + w.length);
+      continue;
+    }
+    const i = text.indexOf(w);
+    if (i >= 0) hits.push([i, w.length, cat]);
+  }
+  hits.sort((a, b) => b[1] - a[1]);
+  const taken = [];
+  for (const [i, len, cat] of hits) {
+    if (taken.some(([j, l]) => len < l && i >= j && i + len <= j + l)) continue;
+    taken.push([i, len]);
+    add(cat, 2 + len);
   }
   for (const ch of text) {
     const cat = KANJI_MAP.get(ch);
@@ -562,6 +581,12 @@ const ENGLISH_EMOJI = {
   '🔬': ['science'], '🎵': ['music'],
 };
 for (const [e, words] of Object.entries(ENGLISH_EMOJI)) EMOJI[e] = (EMOJI[e] || []).concat(words);
+
+// 中に短い言葉を含むが、意味が違う長い言葉の絵文字。'' は「絵文字を付けない」（クラブにトランプの ♣ を付けない）
+EMOJI['🏫'] = (EMOJI['🏫'] || []).concat(['スクール']);
+EMOJI['🚌'] = (EMOJI['🚌'] || []).concat(['スクールバス']);
+EMOJI['😣'] = (EMOJI['😣'] || []).concat(['トラブル']);
+EMOJI[''] = ['クラブ', 'サークル'];
 
 const EMOJI_LIST = [];
 for (const [e, words] of Object.entries(EMOJI)) for (const w of words) EMOJI_LIST.push([w, e]);
