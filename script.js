@@ -14,7 +14,7 @@
 // ---------- 設定 ----------
 const CONFIG = {
   lang: 'ja-JP',
-  subtitleLife: 8000, // 翻訳字幕を、話し終わってから出しておく時間(ms)
+  englishCaptions: false, // 英語字幕モード（Y キーで切替）。日本語で話したことを英語に訳して、面白字幕として出す
   fallbackFont: "'Hiragino Sans', 'Meiryo', sans-serif",
   U: 100, // レイアウト計算の基準フォントサイズ(px)。描画時に画面に合わせて拡大する
   maxWordRatio: 0.6, // 基準の単語 1 文字の高さの上限（画面の高さ比）
@@ -626,6 +626,12 @@ const MAX_CHUNK = 8;
 // 空白を取り除く。ただし英語の単語の間の空白は残す（"thank you" が "thankyou" にならないように）
 const RE_LATIN = /[A-Za-z0-9'’]/;
 // a の後ろに b を続けるとき、間に空白が要るか（英単語どうし、英語の「, . ! ?」の後ろに英単語）
+// ページの文字数としての長さ（英字は日本語の文字より細いので 0.55 文字として数える）
+const pageChars = (text) => {
+  let n = 0;
+  for (const ch of text) n += /[A-Za-z]/.test(ch) ? 0.55 : 1;
+  return n;
+};
 const needsSpace = (a, b) => !!a && !!b && (RE_LATIN.test(a) || /[,.!?]/.test(a)) && RE_LATIN.test(b);
 // 単語をつなげて文に戻す
 function joinWords(words) {
@@ -970,6 +976,8 @@ class Caption {
 
   setText(text, now) {
     this.text = text;
+    // 英語字幕モードでは、訳す前の日本語の言葉の分析（カテゴリ・絵文字）も使う（英語の辞書は小さいので、気持ちは日本語から読む）
+    if (CONFIG.englishCaptions && english.src) this.src = english.src;
     const parts = splitChunks(text);
     for (let i = 0; i < parts.length; i++) {
       if (this.chunks[i]) this.chunks[i].setText(parts[i], now);
@@ -987,8 +995,8 @@ class Caption {
     }
     // 単語のカテゴリから感情のキーワードスコアを作る
     const kw = {};
-    for (const k of this.chunks) {
-      for (const [e, v] of Object.entries(CATEGORIES[k.category].emo)) kw[e] = (kw[e] || 0) + v;
+    for (const cat of this.categories) {
+      for (const [e, v] of Object.entries(CATEGORIES[cat].emo)) kw[e] = (kw[e] || 0) + v;
     }
     kw.surprise = (kw.surprise || 0) + (text.match(/[!！]/g) || []).length * 0.4 + (text.match(/[?？]/g) || []).length * 0.3;
     this.kw = kw;
@@ -1004,9 +1012,9 @@ class Caption {
   decideLook(final = false) {
     if (!this.lookFixed) {
       const count = {};
-      for (const k of this.chunks) {
-        const m = MOOD_OF[k.category];
-        if (k.category !== 'neutral' && m !== 'calm') count[m] = (count[m] || 0) + 1;
+      for (const cat of this.categories) {
+        const m = MOOD_OF[cat];
+        if (cat !== 'neutral' && m !== 'calm') count[m] = (count[m] || 0) + 1;
       }
       let best = null;
       for (const m of MOOD_PRIORITY) if (count[m] && (!best || count[m] > count[best])) best = m;
@@ -1057,8 +1065,28 @@ class Caption {
     if (this.finalI > 0.65 || this.strength > 0.6) impact(this);
     // 確定したページのキーワードの絵文字を、背景の「話題」に加え、会話の雰囲気にも反映する
     for (const k of this.chunks) if (k.emoji) addTopic(k.emoji, now);
+    if (this.src) this.attachSourceEmoji(now);
     feedAtmosphere(this);
     addLog(this);
+  }
+
+  // 単語のカテゴリ（英語字幕モードでは、訳す前の日本語の言葉のカテゴリも含める）
+  get categories() {
+    const cats = this.chunks.map((k) => k.category);
+    return this.src ? cats.concat(this.src.cats) : cats;
+  }
+
+  // 英語字幕モード: 日本語の言葉に付いた絵文字を、英語の文の最後の単語に付け、背景の話題にも加える
+  attachSourceEmoji(now) {
+    const have = new Set(this.chunks.map((k) => k.emoji).filter(Boolean));
+    const add = this.src.emojis.filter((e) => !have.has(e));
+    for (const e of add) addTopic(e, now);
+    const last = this.chunks[this.chunks.length - 1];
+    if (last && !last.emoji && add.length) {
+      last.emoji = add[0];
+      last.emojiBorn = now;
+      last.measured = false;
+    }
   }
 
   get tilt() {
@@ -1105,7 +1133,7 @@ class Caption {
     // 吹き出しの余白や端の帯で狭くなった面積で判定すると、ほぼ 1 単語ずつに細切れになるので、画面全体で判定する
     const fits = (m) => {
       const sub = this.chunks.slice(0, m);
-      const chars = sub.reduce((a, k) => a + k.text.length, 0);
+      const chars = sub.reduce((a, k) => a + pageChars(k.text), 0);
       if (chars > CONFIG.pageMaxChars) return false;
       return chars <= CONFIG.minPageChars || this.bestFlow(sub, true).fit * U >= H * CONFIG.minFontRatio;
     };
@@ -1156,7 +1184,7 @@ class Caption {
     if (full) return { w: W * 0.95, h: H * 0.92, pad: 0 };
     return {
       w: W * (this.bubble ? 0.8 : 0.95) - logReserve,
-      h: H * (this.bubble ? 0.74 : 0.86) - subtitleReserve,
+      h: H * (this.bubble ? 0.74 : 0.86),
       pad: this.bubble ? U * 0.35 : 0,
     };
   }
@@ -1217,7 +1245,7 @@ class Caption {
     const spareX = Math.max(0, (A.w - (f.bw + A.pad * 2) * this.scale) / 2);
     const spareY = Math.max(0, (A.h - (f.bh + A.pad * 2) * this.scale) / 2);
     this.cx = lerp(this.cx, (W - logReserve) / 2 + this.offRoll[0] * spareX, 0.2);
-    this.cy = lerp(this.cy, (H - subtitleReserve) / 2 + this.offRoll[1] * spareY, 0.2);
+    this.cy = lerp(this.cy, H / 2 + this.offRoll[1] * spareY, 0.2);
   }
 
   flow(items, limit, gap, cols) {
@@ -1427,7 +1455,6 @@ function updateLive(raw) {
   utter.start = Math.min(utter.start, text.length);
   liveCaption.setText(text.slice(utter.start), now);
   paginate(text, now);
-  requestTranslation(text);
 }
 
 // 認識が確定したテキスト
@@ -1446,7 +1473,6 @@ function commitUtterance(raw) {
     liveCaption.setText(rest, now);
     paginate(text, now);
   }
-  requestTranslation(text);
   if (liveCaption.chunks.length) liveCaption.commit(now);
   else liveCaption.dead = true;
   liveCaption = null;
@@ -1455,8 +1481,10 @@ function commitUtterance(raw) {
 }
 
 // 手入力（音声認識が使えない時の代替）。「!」の数で強さを決める
-function commitTyped(text) {
+async function commitTyped(text) {
   if (liveCaption) commitUtterance(utter.text);
+  // 英語字幕モードでは、手入力した日本語も英語に訳してから出す
+  if (CONFIG.englishCaptions) text = (await translateToEnglish(text)) || text;
   pendingVol = clamp(0.35 + (text.match(/[!！]/g) || []).length * 0.2, 0, 1);
   features.recentPeak = Math.max(features.recentPeak, pendingVol);
   commitUtterance(text);
@@ -1493,10 +1521,10 @@ function initRecognition() {
     let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i];
-      if (r.isFinal) commitUtterance(r[0].transcript);
+      if (r.isFinal) onSpeechFinal(r[0].transcript);
       else interim += r[0].transcript;
     }
-    if (interim) updateLive(interim);
+    if (interim) onSpeechInterim(interim);
   };
 
   recognition.onerror = (e) => {
@@ -1527,114 +1555,94 @@ function initRecognition() {
   startRecognition();
 }
 
-// 音声認識の言語を 日本語 ⇔ 英語 で切り替える（英語の授業・英語で話すとき）
-const LANG_LABEL = { 'ja-JP': '日本語', 'en-US': '英語' };
-function toggleLanguage() {
-  CONFIG.lang = CONFIG.lang === 'ja-JP' ? 'en-US' : 'ja-JP';
-  toast(`音声認識: ${LANG_LABEL[CONFIG.lang]}${translation.on ? `（翻訳: ${LANG_LABEL[CONFIG.lang]} → ${LANG_LABEL[targetLang()]}）` : ''}`);
-  if (translation.on) ensureTranslator().catch((err) => translationFailed(err));
-  if (!recognition) return;
-  recognition.lang = CONFIG.lang;
-  // いったん止めると onend で新しい言語のまま再開する
+/* =========================================================
+ * 英語字幕モード（Y キー）: 日本語で話したことを英語に訳して、そのまま面白字幕として出す
+ *   Chrome に内蔵の翻訳（Translator API）を使う。無料・キー不要で、翻訳は PC の中で行う（初回だけ翻訳モデルをダウンロード）
+ *   話している途中も訳し続け、確定したら確定した文の訳で字幕を確定する
+ * ========================================================= */
+const english = { translator: null, queue: [], busy: false, src: null };
+
+// 訳す前の日本語の分析: 内容のある言葉のカテゴリと、付く絵文字（重複なし）
+function analyzeSource(text) {
+  const parts = splitChunks(normalize(text));
+  return {
+    cats: parts.map(classifyChunk).filter((c) => c !== 'neutral'),
+    emojis: [...new Set(parts.map(findEmoji).filter(Boolean))],
+  };
+}
+
+async function ensureTranslator() {
+  if (english.translator) return english.translator;
+  if (!('Translator' in self)) throw new Error('unsupported');
+  const pair = { sourceLanguage: 'ja', targetLanguage: 'en' };
+  const avail = await Translator.availability(pair);
+  if (avail === 'unavailable') throw new Error('unavailable');
+  if (avail !== 'available') toast('翻訳モデルをダウンロード中…（初回だけ）', 60000);
+  english.translator = await Translator.create({
+    ...pair,
+    monitor(m) {
+      m.addEventListener('downloadprogress', (e) => toast(`翻訳モデルをダウンロード中… ${Math.round(e.loaded * 100)}%`, 60000));
+    },
+  });
+  return english.translator;
+}
+
+async function translateToEnglish(text) {
   try {
-    recognition.stop();
+    return await (await ensureTranslator()).translate(text);
   } catch (err) {
-    /* 止まっている */
+    console.warn('翻訳できません', err);
+    return '';
   }
 }
 
-/* =========================================================
- * 翻訳字幕（Y キー）: 話した言葉を翻訳して、画面の下に字幕で出す
- *   Chrome に内蔵の翻訳（Translator API）を使う。無料・キー不要で、翻訳は PC の中で行う（初回だけ翻訳モデルをダウンロード）
- *   日本語で話す → 英語の字幕 / E キーで英語に切り替えて話す → 日本語の字幕
- * ========================================================= */
-const subtitleEl = document.getElementById('subtitle');
-const translation = { on: false, translator: null, pair: '', busy: false, pending: '', shownAt: 0 };
-let subtitleReserve = 0; // 翻訳字幕の帯のために、字幕が避ける下の高さ(px)
-const langCode = (lang) => lang.slice(0, 2); // 'ja-JP' → 'ja'
-const targetLang = () => (langCode(CONFIG.lang) === 'ja' ? 'en-US' : 'ja-JP');
-
-// 今の向き（話す言語 → もう一方）の翻訳を用意する。向きが変わったら作り直す
-async function ensureTranslator() {
-  const src = langCode(CONFIG.lang);
-  const dst = langCode(targetLang());
-  const pair = `${src}>${dst}`;
-  if (translation.translator && translation.pair === pair) return translation.translator;
-  if (!('Translator' in self)) throw new Error('unsupported');
-  const avail = await Translator.availability({ sourceLanguage: src, targetLanguage: dst });
-  if (avail === 'unavailable') throw new Error('unavailable');
-  if (avail !== 'available') toast('翻訳モデルをダウンロード中…', 30000);
-  const t = await Translator.create({
-    sourceLanguage: src,
-    targetLanguage: dst,
-    monitor(m) {
-      m.addEventListener('downloadprogress', (e) => toast(`翻訳モデルをダウンロード中… ${Math.round(e.loaded * 100)}%`, 30000));
-    },
-  });
-  if (translation.translator && translation.translator.destroy) translation.translator.destroy();
-  translation.translator = t;
-  translation.pair = pair;
-  return t;
-}
-
-function translationFailed(err) {
-  console.warn('翻訳を使えません', err);
-  translation.on = false;
-  subtitleEl.hidden = true;
-  toast('このブラウザでは翻訳字幕を使えません（Chrome 138 以降のパソコン版が必要です）', 6000);
-}
-
-async function toggleTranslation() {
-  if (translation.on) {
-    translation.on = false;
-    subtitleEl.hidden = true;
-    toast('翻訳字幕 OFF');
+async function toggleEnglishCaptions() {
+  if (liveCaption) commitUtterance(utter.text); // 話している途中の字幕は、今の言語のまま確定させる
+  english.queue.length = 0;
+  if (CONFIG.englishCaptions) {
+    CONFIG.englishCaptions = false;
+    toast('日本語の字幕');
     return;
   }
   try {
     await ensureTranslator();
-    translation.on = true;
-    toast(`翻訳字幕 ON（${LANG_LABEL[CONFIG.lang]} → ${LANG_LABEL[targetLang()]}）`);
+    CONFIG.englishCaptions = true;
+    toast('英語の字幕（日本語で話すと英語で出ます）');
   } catch (err) {
-    translationFailed(err);
+    console.warn(err);
+    toast('このブラウザでは英語の字幕を使えません（Chrome 138 以降のパソコン版が必要です）', 6000);
   }
 }
 
-// 発話の全文を翻訳に回す。翻訳中に次の文が来たら、いちばん新しい文だけを訳す（途中経過が続いても追いつける）
-function requestTranslation(text) {
-  if (!translation.on || !text) return;
-  translation.pending = text;
-  if (!translation.busy) runTranslation();
+// 認識の途中経過・確定を受け取る。英語字幕モードなら訳してから字幕にする
+function onSpeechInterim(text) {
+  if (!CONFIG.englishCaptions) return updateLive(text);
+  // 途中経過は、まだ訳していない古い途中経過を捨てて、いちばん新しいものだけ訳す
+  const last = english.queue[english.queue.length - 1];
+  if (last && !last.final) last.text = text;
+  else english.queue.push({ text, final: false });
+  runEnglish();
 }
 
-async function runTranslation() {
-  translation.busy = true;
-  while (translation.pending) {
-    const text = translation.pending;
-    translation.pending = '';
-    try {
-      const t = await ensureTranslator();
-      const out = await t.translate(text);
-      if (translation.on && out) showSubtitle(out);
-    } catch (err) {
-      console.warn('翻訳できません', err);
-    }
+function onSpeechFinal(text) {
+  if (!CONFIG.englishCaptions) return commitUtterance(text);
+  english.queue.push({ text, final: true });
+  runEnglish();
+}
+
+// 順番どおりに 1 つずつ訳して字幕に渡す（確定の前に、あとから来た途中経過が割り込まないように）
+async function runEnglish() {
+  if (english.busy) return;
+  english.busy = true;
+  while (english.queue.length) {
+    const item = english.queue.shift();
+    const out = await translateToEnglish(item.text);
+    if (!CONFIG.englishCaptions) break;
+    english.src = analyzeSource(item.text);
+    if (item.final) commitUtterance(out || utter.text);
+    else if (out) updateLive(out);
   }
-  translation.busy = false;
-}
-
-function showSubtitle(text) {
-  subtitleEl.dataset.lang = langCode(targetLang()) === 'en' ? 'English' : '日本語';
-  subtitleEl.textContent = text;
-  subtitleEl.hidden = false;
-  translation.shownAt = performance.now();
-}
-
-// しばらく話さなければ字幕を消す。字幕を出している間は、上の字幕が帯を避ける
-function updateSubtitle(now) {
-  if (!subtitleEl.hidden && now - translation.shownAt > CONFIG.subtitleLife) subtitleEl.hidden = true;
-  const want = translation.on ? subtitleEl.offsetHeight + H * 0.05 : 0;
-  subtitleReserve = lerp(subtitleReserve, translation.on ? Math.max(want, H * 0.14) : 0, 0.1);
+  english.busy = false;
 }
 
 function startRecognition() {
@@ -1751,8 +1759,8 @@ const atmosphere = { mood: 'calm', score: Object.fromEntries(Object.keys(MOODS).
 function feedAtmosphere(c) {
   // 新しいページが来るたびに前の雰囲気を弱める（最近の発言ほど強く効く）
   for (const k in atmosphere.score) atmosphere.score[k] *= 0.75;
-  for (const k of c.chunks) {
-    const m = WORD_MOOD_ATM[MOOD_OF[k.category]];
+  for (const cat of c.categories) {
+    const m = WORD_MOOD_ATM[MOOD_OF[cat]];
     if (m) atmosphere.score[m] += 1;
   }
   const e = EMO_ATM[c.emotion];
@@ -2466,7 +2474,6 @@ function frame() {
   drawCamView();
   updateHud(now);
   updateSettingsMeter();
-  updateSubtitle(now);
   requestAnimationFrame(frame);
 }
 
@@ -2509,8 +2516,8 @@ function updateHud(now) {
     row('要約', summary.cur || 'なし') +
     row('話題', [...topics].sort((a, b) => b.weight - a.weight).map((t) => t.emoji).join(' ') || 'なし') +
     sticker('ようす') +
-    row('認識', `${running ? '● 聞き取り中' : '停止'}（${LANG_LABEL[CONFIG.lang]}）`) +
-    row('翻訳', translation.on ? `${LANG_LABEL[CONFIG.lang]} → ${LANG_LABEL[targetLang()]}` : 'OFF') +
+    row('認識', running ? '● 聞き取り中' : '停止') +
+    row('字幕', CONFIG.englishCaptions ? '英語（日本語から翻訳）' : '日本語') +
     row('おだやか', CONFIG.calm ? 'ON' : 'OFF') +
     (words ? `<div class="words">${words}</div>` : '');
 }
@@ -2671,11 +2678,7 @@ window.addEventListener('keydown', (e) => {
       break;
     case 'y':
     case 'Y':
-      toggleTranslation();
-      break;
-    case 'e':
-    case 'E':
-      toggleLanguage();
+      toggleEnglishCaptions();
       break;
     case 's':
     case 'S':
